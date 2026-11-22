@@ -1,40 +1,55 @@
-# Desk study (Three.js)
+# Desk study (Three.js + Vite)
 
-Interaktívna izba – Aperture and air demo v jednom projekte.
+Interaktívna izba – Aperture and air.
 
 ## Štruktúra
 
-| Súbor / priečinok | Účel |
-|-------------------|------|
-| `index.html` | HTML shell, UI, dialógy, import map |
-| `css/app.css` | Všetky štýly |
-| `src/main.js` | Vstupný bod – načíta Three.js a spustí logiku |
-| `src/app.js` | **Hlavný zdroják** – celá aplikácia (na úpravy) |
-| `src/chunks/*.js` | Logické bloky odvodené z `app.js` (generované) |
+| Súbor / priečinok | Účel                                      |
+| ----------------- | ----------------------------------------- |
+| `index.html`      | HTML shell, UI, dialógy                   |
+| `css/app.css`     | Štýly                                     |
+| `src/main.js`     | Vite vstup – Three.js + spustenie app     |
+| `src/app.js`      | **Hlavný zdroják** (úpravy sem)           |
+| `src/chunks/`     | Voliteľné logické bloky (`npm run split`) |
+| `vite.config.js`  | Konfigurácia Vite                         |
 
 ## Spustenie
 
-Vyžaduje HTTP server (kvôli ES modulom a import map):
-
 ```bash
-cd "/cesta/k/three.js"
-python3 -m http.server 8765
+npm install
+npm run dev
 ```
 
-Potom otvor [http://127.0.0.1:8765/](http://127.0.0.1:8765/).
+Otvorí sa [http://127.0.0.1:5173/](http://127.0.0.1:5173/).
 
-## Úpravy kódu
-
-1. Upravuj **`src/app.js`** – jeden súbor so všetkými `/* 01-… */` sekciami.
-2. Ak chceš mať rozdelené súbory v `src/chunks/`, spusti:
+## Formátovanie (Biome)
 
 ```bash
-node scripts/split-chunks.mjs
+npm run format   # formátovanie
+npm run lint     # lint
+npm run check    # format + lint + safe fixes
 ```
 
-Prehliadač načítava `src/main.js`, ktorý zreťazí chunky v rovnakom poradí ako pôvodný skript.
+Konfigurácia: `biome.json` (2 medzery, single quotes). Generované `src/chunks/` sú vylúčené.
+
+## Build
+
+```bash
+npm run build    # výstup do dist/
+npm run preview  # náhľad produkčného buildu
+```
+
+## Úpravy
+
+Upravuj **`src/app.js`**. Vite má HMR – po uložení sa stránka obnoví.
+
+Voliteľne rozdeliť na chunky na čítanie:
+
+```bash
+npm run split
+```
 
 ## Poznámky
 
-- Three.js ide z CDN cez `importmap` v `index.html`.
-- Nastavenia a poznámky sa ukladajú do `localStorage`.
+- Three.js je npm závislosť (`three@0.160`).
+- Nastavenia a poznámky idú do `localStorage`.
