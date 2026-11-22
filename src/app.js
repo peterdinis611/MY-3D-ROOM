@@ -355,14 +355,14 @@ camera.position.copy(HOME)
 const controls = new OrbitControls(camera, renderer.domElement)
 controls.target.copy(HOMET)
 controls.enableDamping = true
-controls.minDistance = 1
+controls.minDistance = 1.45
 controls.maxDistance = 4
 controls.enablePan = false
 controls.zoomSpeed = 0.7
 controls.dampingFactor = 0.08
 controls.maxPolarAngle = Math.PI * 0.55
-controls.minAzimuthAngle = -0.55
-controls.maxAzimuthAngle = 1.2
+controls.minAzimuthAngle = -0.45
+controls.maxAzimuthAngle = 0.95
 
 const sun = new THREE.DirectionalLight(0xffffff, 2)
 sun.castShadow = true
@@ -624,14 +624,15 @@ function outdoorForDay(i = S.i) {
 }
 function roomTempTarget() {
   const out = outdoorForDay()
-  let t = out + (radiatorOn ? 11 : -0.5)
-  if (windowIsOpen()) {
-    // otvorené okno ťahá k vonkajšej teplote
-    t = t * 0.35 + out * 0.65
-  } else {
-    t += radiatorOn ? 2.5 : 1.2 // zatvorená izba drží teplo
+  if (radiatorOn) {
+    let t = out + 11
+    if (windowIsOpen()) t = t * 0.4 + out * 0.6
+    else t += 2.5
+    return t
   }
-  return t
+  // radiátor vypnutý — izba drží teplo; chladne k mierne teplejšiemu ako vonku
+  if (windowIsOpen()) return out + 2.2
+  return out + 6.5
 }
 function setRadiator(on, skipSave = false) {
   radiatorOn = !!on
@@ -669,8 +670,12 @@ let climateUiAcc = 0
 function updateClimate(dt) {
   outdoorTemp += (outdoorForDay() - outdoorTemp) * Math.min(1, dt * 0.6)
   const tgt = roomTempTarget()
-  // radiátor ohrieva rýchlejšie; otvorené okno chladí / vyrovnáva rýchlejšie
-  const rate = radiatorOn ? 0.28 : windowIsOpen() ? 0.4 : 0.14
+  const cooling = roomTemp > tgt + 0.05
+  // radiátor ohrieva rýchlo; pri vypnutí teplota klesá výrazne pomalšie
+  let rate
+  if (radiatorOn) rate = 0.26
+  else if (cooling) rate = windowIsOpen() ? 0.055 : 0.022
+  else rate = windowIsOpen() ? 0.12 : 0.07
   roomTemp += (tgt - roomTemp) * Math.min(1, dt * rate)
   climateUiAcc += dt
   if (climateUiAcc > 0.12) {
@@ -902,8 +907,9 @@ function syncPenUi() {
   Object.entries(penMeshes).forEach(([id, mesh]) => {
     if (!mesh) return
     const on = id === activePen
-    mesh.position.y = on ? mesh.userData.baseY + 0.012 : mesh.userData.baseY
-    mesh.scale.setScalar(on ? 1.12 : 1)
+    // zostávajú na papieri — výber len miernym zväčšením, bez levitácie
+    mesh.position.y = mesh.userData.baseY
+    mesh.scale.setScalar(on ? 1.08 : 1)
   })
 }
 function setActivePen(id, { save = true, redraw = true } = {}) {
@@ -1029,9 +1035,10 @@ function buildPaper() {
   paperReadL.position.set(0, 0.22, 0.02)
   paperReadL.visible = false
   paperG.add(paperReadL)
-  buildBallpointPen('red', 0xb41c1c, 0.05, 0.014, 0.055, 0.35)
-  buildBallpointPen('blue', 0x1a3a8a, -0.05, 0.013, -0.06, -0.45)
-  buildPencilPen('pencil', 0.1, 0.012, -0.01, 0.95)
+  // y ≈ výška listu + polomer pera, aby ležali na papieri
+  buildBallpointPen('red', 0xb41c1c, 0.05, 0.019, 0.055, 0.35)
+  buildBallpointPen('blue', 0x1a3a8a, -0.05, 0.019, -0.06, -0.45)
+  buildPencilPen('pencil', 0.1, 0.018, -0.01, 0.95)
   syncPenUi()
 }
 function pickPen(e) {
@@ -1117,6 +1124,125 @@ function setSitting(on, skipSave = false) {
 }
 
 /* 08b-doplnky-izby.js */
+let plantG,
+  plantLeaves = [],
+  plantSoil,
+  waterCanG,
+  waterDrops,
+  waterDropData = [],
+  waterAnimT = 0,
+  waterWetT = 0
+function startWaterPlant() {
+  if (waterAnimT > 0.05) return
+  waterAnimT = 1.65
+  waterWetT = 8
+  if (waterDrops) waterDrops.visible = true
+  sfxWater()
+  sfxClick()
+  const h = $('hint')
+  if (h && !h.textContent.startsWith('Chyba')) {
+    const prev = h.textContent
+    h.textContent = 'Zalievam kvetinu…'
+    setTimeout(() => {
+      if ($('hint')?.textContent === 'Zalievam kvetinu…') syncHint()
+      else if ($('hint') && prev) {
+        /* keep */
+      }
+    }, 1600)
+  }
+}
+function sfxWater() {
+  if (!A.ctx || !A.on) return
+  const c = A.ctx,
+    t = c.currentTime
+  for (let i = 0; i < 5; i++) {
+    const o = c.createOscillator(),
+      g = c.createGain(),
+      f = c.createBiquadFilter()
+    o.type = 'triangle'
+    f.type = 'bandpass'
+    f.frequency.value = 900 + i * 180
+    f.Q.value = 3
+    o.frequency.setValueAtTime(420 + i * 40, t + i * 0.06)
+    o.frequency.exponentialRampToValueAtTime(180, t + i * 0.06 + 0.2)
+    g.gain.setValueAtTime(0, t + i * 0.06)
+    g.gain.linearRampToValueAtTime(0.035, t + i * 0.06 + 0.02)
+    g.gain.exponentialRampToValueAtTime(0.001, t + i * 0.06 + 0.28)
+    o.connect(f)
+    f.connect(g)
+    g.connect(A.master)
+    o.start(t + i * 0.06)
+    o.stop(t + i * 0.06 + 0.3)
+  }
+  burst('lowpass', 600, 0.08, 0.35)
+}
+function updateWaterPlant(dt, t) {
+  if (plantSoil?.material) {
+    const w = Math.max(0, Math.min(1, waterWetT / 8))
+    plantSoil.material.color.setRGB(
+      0x4a / 255 * (1 - w) + 0x2a / 255 * w,
+      0x34 / 255 * (1 - w) + 0x1a / 255 * w,
+      0x24 / 255 * (1 - w) + 0x10 / 255 * w
+    )
+    if (waterWetT > 0) waterWetT -= dt
+  }
+  // listový bounce pri / po zálievke
+  const excite = waterAnimT > 0 ? Math.min(1, waterAnimT) : Math.max(0, waterWetT / 8) * 0.35
+  plantLeaves.forEach((lf) => {
+    if (!lf?.userData) return
+    const ph = lf.userData.phase || 0
+    const base = lf.userData.baseY ?? lf.position.y
+    lf.position.y = base + Math.sin(t * (5 + ph) + ph) * 0.012 * excite
+    lf.rotation.z = Math.sin(t * 3.2 + ph) * 0.08 * excite
+    lf.rotation.x = Math.cos(t * 2.6 + ph) * 0.05 * excite
+  })
+
+  if (!waterCanG) return
+  if (waterAnimT <= 0) {
+    waterCanG.rotation.z += (0 - waterCanG.rotation.z) * Math.min(1, dt * 6)
+    if (waterDrops) waterDrops.visible = false
+    return
+  }
+  waterAnimT -= dt
+  const u = 1 - Math.max(0, waterAnimT) / 1.65
+  // krhla sa nakloní a poleje
+  const pour = u < 0.2 ? u / 0.2 : u > 0.75 ? Math.max(0, 1 - (u - 0.75) / 0.25) : 1
+  waterCanG.rotation.z = -0.55 * pour
+  waterCanG.position.y = 0.02 * pour
+
+  // spawn / update kvapiek
+  if (waterDropData.length && waterDrops) {
+    const spout = new THREE.Vector3(-1.78, 0.2 + 0.06 * pour, 1.68)
+    const attr = waterDrops.geometry.attributes.position
+    const pouring = u > 0.12 && u < 0.78
+    if (pouring && Math.random() < 0.55) {
+      const d = waterDropData.find((x) => !x.alive) || waterDropData[(Math.random() * waterDropData.length) | 0]
+      d.alive = true
+      d.life = 0.55 + Math.random() * 0.35
+      d.x = spout.x + (Math.random() - 0.5) * 0.04
+      d.y = spout.y
+      d.z = spout.z + (Math.random() - 0.5) * 0.04
+      d.vx = -0.15 - Math.random() * 0.12
+      d.vy = 0.05 + Math.random() * 0.08
+      d.vz = -0.05 + (Math.random() - 0.5) * 0.08
+    }
+    waterDropData.forEach((d, i) => {
+      if (!d.alive) {
+        attr.setXYZ(i, 0, -10, 0)
+        return
+      }
+      d.life -= dt
+      d.vy -= 2.8 * dt
+      d.x += d.vx * dt
+      d.y += d.vy * dt
+      d.z += d.vz * dt
+      if (d.life <= 0 || d.y < 0.22) d.alive = false
+      attr.setXYZ(i, d.x, d.y, d.z)
+    })
+    attr.needsUpdate = true
+    waterDrops.material.opacity = 0.35 + pour * 0.55
+  }
+}
 function buildRoomExtras() {
   const woodDark = M(0x5c4030, 0.72, 0.04)
   const woodMid = M(0x7a5538, 0.68, 0.03)
@@ -1147,26 +1273,95 @@ function buildRoomExtras() {
   scene.add(rug)
 
   // izbová rastlina pri okne
-  const plant = new THREE.Group()
-  plant.position.set(-2.15, 0, 1.55)
-  scene.add(plant)
-  cyl(plant, 0.11, 0.18, ceramic, 0, 0.09, 0, 0.13)
-  cyl(plant, 0.09, 0.06, M(0x4a3424, 0.9), 0, 0.2, 0)
-  const stem = cyl(plant, 0.012, 0.55, M(0x3a5a2a, 0.7), 0, 0.5, 0)
+  plantG = new THREE.Group()
+  plantG.position.set(-2.15, 0, 1.55)
+  plantG.name = 'plant'
+  scene.add(plantG)
+  cyl(plantG, 0.11, 0.18, ceramic, 0, 0.09, 0, 0.13)
+  plantSoil = cyl(plantG, 0.09, 0.06, M(0x4a3424, 0.9), 0, 0.2, 0)
+  plantSoil.userData.dryColor = 0x4a3424
+  plantSoil.userData.wetColor = 0x2a1a10
+  const stem = cyl(plantG, 0.012, 0.55, M(0x3a5a2a, 0.7), 0, 0.5, 0)
+  plantLeaves = []
   for (let i = 0; i < 7; i++) {
     const ang = (i / 7) * Math.PI * 2
     const fr = new THREE.Mesh(new THREE.SphereGeometry(0.12, 10, 8), i % 2 ? leaf : leaf2)
     fr.scale.set(1.4, 0.55, 0.9)
     fr.position.set(Math.cos(ang) * 0.14, 0.72 + (i % 3) * 0.08, Math.sin(ang) * 0.14)
     fr.castShadow = true
-    plant.add(fr)
+    fr.userData.baseY = fr.position.y
+    fr.userData.phase = i * 0.9
+    plantG.add(fr)
+    plantLeaves.push(fr)
   }
   const top = new THREE.Mesh(new THREE.SphereGeometry(0.16, 12, 10), leaf)
   top.position.set(0, 0.92, 0)
   top.scale.set(1.1, 0.7, 1.1)
   top.castShadow = true
-  plant.add(top)
+  top.userData.baseY = 0.92
+  top.userData.phase = 0.2
+  plantG.add(top)
+  plantLeaves.push(top)
   stem.castShadow = true
+  // hitbox na klik
+  const plantHit = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.28, 0.22, 1.15, 12),
+    new THREE.MeshBasicMaterial({ visible: false })
+  )
+  plantHit.position.y = 0.55
+  plantHit.name = 'plantHit'
+  plantG.add(plantHit)
+
+  // krhla vedľa rastliny
+  waterCanG = new THREE.Group()
+  waterCanG.position.set(-1.85, 0, 1.72)
+  waterCanG.rotation.y = 0.55
+  scene.add(waterCanG)
+  const canBody = M(0x3a7a9a, 0.45, 0.15)
+  cyl(waterCanG, 0.055, 0.12, canBody, 0, 0.08, 0, 0.06)
+  box(waterCanG, 0.08, 0.01, 0.08, canBody, 0, 0.145, 0)
+  const spout = cyl(waterCanG, 0.012, 0.11, canBody, 0.07, 0.12, 0, 0.008)
+  spout.rotation.z = -0.85
+  const handle = new THREE.Mesh(
+    new THREE.TorusGeometry(0.045, 0.008, 8, 16, Math.PI),
+    canBody
+  )
+  handle.rotation.y = Math.PI / 2
+  handle.rotation.z = Math.PI / 2
+  handle.position.set(-0.02, 0.12, 0)
+  waterCanG.add(handle)
+  waterCanG.userData.baseRotZ = 0
+
+  // kvapky vody (points)
+  {
+    const n = 28
+    const pos = new Float32Array(n * 3)
+    for (let i = 0; i < n; i++) pos.set([0, -10, 0], i * 3)
+    waterDrops = new THREE.Points(
+      new THREE.BufferGeometry().setAttribute('position', new THREE.BufferAttribute(pos, 3)),
+      new THREE.PointsMaterial({
+        size: 0.025,
+        color: 0x7ec8ff,
+        transparent: true,
+        opacity: 0.85,
+        depthWrite: false,
+        sizeAttenuation: true,
+      })
+    )
+    waterDrops.visible = false
+    waterDrops.frustumCulled = false
+    scene.add(waterDrops)
+    waterDropData = Array.from({ length: n }, () => ({
+      alive: false,
+      x: 0,
+      y: 0,
+      z: 0,
+      vx: 0,
+      vy: 0,
+      vz: 0,
+      life: 0,
+    }))
+  }
 
   // menšia rastlina na parapete
   const sill = new THREE.Group()
@@ -1271,30 +1466,57 @@ function buildRoomExtras() {
     sh.rotation.y = syaw
   }
 
-  // plagát na pravej stene
-  const poster = ctex(256, 384, (c, w, h) => {
-    const g = c.createLinearGradient(0, 0, 0, h)
-    g.addColorStop(0, '#1a2a3a')
-    g.addColorStop(1, '#3a6a5a')
+  // plagát na pravej stene (odstup od steny → bez z-fightingu)
+  const poster = ctex(512, 720, (c, w, h) => {
+    const g = c.createLinearGradient(0, 0, w * 0.2, h)
+    g.addColorStop(0, '#0e1a22')
+    g.addColorStop(0.55, '#1c3d42')
+    g.addColorStop(1, '#2f5a48')
     c.fillStyle = g
     c.fillRect(0, 0, w, h)
-    c.fillStyle = '#e8dcc8'
-    c.font = 'bold 36px Georgia, serif'
-    c.fillText('APERTURE', 28, 160)
-    c.font = '22px Georgia, serif'
-    c.fillText('& air', 90, 200)
-    c.strokeStyle = '#c9a86a'
-    c.lineWidth = 4
-    c.strokeRect(16, 16, w - 32, h - 32)
+    // jemný vignette
+    const vg = c.createRadialGradient(w * 0.5, h * 0.45, 40, w * 0.5, h * 0.5, w * 0.75)
+    vg.addColorStop(0, 'rgba(0,0,0,0)')
+    vg.addColorStop(1, 'rgba(0,0,0,0.35)')
+    c.fillStyle = vg
+    c.fillRect(0, 0, w, h)
+    c.strokeStyle = '#d4b888'
+    c.lineWidth = 6
+    c.strokeRect(28, 28, w - 56, h - 56)
+    c.strokeStyle = 'rgba(212,184,136,0.35)'
+    c.lineWidth = 2
+    c.strokeRect(42, 42, w - 84, h - 84)
+    c.fillStyle = '#f0e6d4'
+    c.textAlign = 'center'
+    c.font = 'bold 64px "Iowan Old Style", "Palatino Linotype", Palatino, serif'
+    c.fillText('APERTURE', w / 2, h * 0.46)
+    c.font = '36px "Iowan Old Style", "Palatino Linotype", Palatino, serif'
+    c.fillStyle = '#c9b896'
+    c.fillText('&  air', w / 2, h * 0.54)
+    c.strokeStyle = '#c9b896'
+    c.lineWidth = 1.5
+    c.beginPath()
+    c.moveTo(w * 0.32, h * 0.58)
+    c.lineTo(w * 0.68, h * 0.58)
+    c.stroke()
   })
+  const frame = box(scene, 0.028, 0.9, 0.64, woodDark, 3.785, 1.72, 2.55)
   const posterM = new THREE.Mesh(
-    new THREE.PlaneGeometry(0.55, 0.82),
-    new THREE.MeshStandardMaterial({ map: poster, roughness: 0.7 })
+    new THREE.PlaneGeometry(0.52, 0.78),
+    new THREE.MeshStandardMaterial({
+      map: poster,
+      roughness: 0.78,
+      metalness: 0.02,
+      polygonOffset: true,
+      polygonOffsetFactor: -1,
+      polygonOffsetUnits: -1,
+    })
   )
-  posterM.position.set(3.76, 1.7, 2.6)
+  posterM.position.set(3.76, 1.72, 2.55)
   posterM.rotation.y = -Math.PI / 2
+  posterM.receiveShadow = true
   scene.add(posterM)
-  box(scene, 0.02, 0.86, 0.59, woodDark, 3.77, 1.7, 2.6)
+  frame.receiveShadow = true
 
   // kalendár na zadnej stene
   const cal = ctex(256, 280, (c, w, h) => {
@@ -2407,11 +2629,12 @@ function buildMugs() {
   steam2 = new THREE.Points(steam.geometry, steam.material)
   steam2.position.set(-0.6, 1.08, -0.33)
   scene.add(steam2)
-  // pen
-  const pen = cyl(scene, 0.006, 0.15, M(0xc01818, 0.4), -0.52, DESK_TOP + 0.082, 0.14)
-  pen.rotation.z = Math.PI / 2
-  pen.rotation.y = 0.35
-  box(scene, 0.04, 0.002, 0.004, M(0xcccccc, 0.2, 0.9), -0.48, 0.784, 0.13).rotation.y = 0.35
+  // pero na stole (nie vo vzduchu) — pri puzdre
+  const deskPen = cyl(scene, 0.006, 0.15, M(0xc01818, 0.4), -0.52, DESK_TOP + 0.0065, 0.12)
+  deskPen.rotation.z = Math.PI / 2
+  deskPen.rotation.y = 0.35
+  const deskClip = box(scene, 0.04, 0.002, 0.004, M(0xcccccc, 0.2, 0.9), -0.48, DESK_TOP + 0.012, 0.11)
+  deskClip.rotation.y = 0.35
   // Magic Mouse – hladké telo + spodok
   const mouse = new THREE.Group()
   mouse.position.set(1.1, DESK_TOP + 0.012, 0.38)
@@ -2611,47 +2834,73 @@ function buildWallDecor() {
   scene.add(hook)
   cyl(hook, 0.012, 0.03, M(0x333333, 0.4, 0.7), 0, 0, 0).rotation.x = Math.PI / 2
   ;[
-    [0xd4af37, 0, 0.55, 0xcc2233],
-    [0xcd7f32, 0.07, 0.45, 0xffffff],
-    [0x3a3a3a, -0.06, 0.5, 0x2a4ba0],
-    [0xc0c0c0, 0.13, 0.4, 0xb6ff2a],
-    [0x8a6a30, -0.12, 0.42, 0xb6ff2a],
+    [0xd4af37, 0, 0.48, 0xcc2233],
+    [0xcd7f32, 0.07, 0.4, 0xffffff],
+    [0x3a3a3a, -0.06, 0.44, 0x2a4ba0],
+    [0xc0c0c0, 0.13, 0.36, 0xb6ff2a],
+    [0x8a6a30, -0.12, 0.38, 0xb6ff2a],
   ].forEach(([col, dx, len, rib], i) => {
     const g = new THREE.Group()
-    g.position.set(dx * 0.6, 0, i * 0.002)
+    g.position.set(dx * 0.55, 0, i * 0.002)
     hook.add(g)
-    box(g, 0.03, len, 0.004, M(rib, 0.7), 0, -len / 2, 0)
-    cyl(g, 0.045, 0.008, M(col, 0.3, 0.9), 0, -len - 0.04, 0).rotation.x = Math.PI / 2
+    box(g, 0.028, len, 0.0035, M(rib, 0.75), 0, -len / 2, 0)
+    cyl(g, 0.04, 0.007, M(col, 0.3, 0.9), 0, -len - 0.035, 0).rotation.x = Math.PI / 2
     medals.push(g)
-    g.userData.medalPhase = i * 1.7
+    g.userData.medalPhase = i * 2.15 + 0.4
     g.userData.medalLen = len
+    g.userData.angZ = 0
+    g.userData.angX = 0
+    g.userData.velZ = 0
+    g.userData.velX = 0
   })
 }
-function updateMedalsWind(t) {
+function updateMedalsWind(t, dt = 1 / 60) {
   const open = Math.max(0, Math.min(1, S.open))
-  const want = S.openT > 0.5 && open > 0.15
-  // vietor od okna (ľavá stena) → silnejšie kývanie do strán
-  const gust =
-    want
-      ? open *
-        (0.55 +
-          0.45 * (0.5 + 0.5 * Math.sin(t * 0.85) + 0.3 * Math.sin(t * 2.1 + 0.4)))
-      : 0.08
-  const ampZ = want ? 0.055 + gust * 0.22 : 0.025
-  const ampX = want ? 0.02 + gust * 0.08 : 0.008
-  const speed = want ? 2.4 + gust * 2.8 : 1.3
+  const windy = S.openT > 0.5 && open > 0.2
+  // pomalý, nepravidelný vietor — nie rigidné kývanie
+  const breeze = windy
+    ? open *
+      (0.35 +
+        0.25 * Math.sin(t * 0.31) +
+        0.18 * Math.sin(t * 0.67 + 1.1) +
+        0.1 * Math.sin(t * 1.15 + 0.4))
+    : 0
+  const gust = windy ? Math.max(0, Math.sin(t * 0.19 + 0.7) * 0.55) * open * 0.35 : 0
+  const strength = Math.min(1, breeze + gust)
+
   medals.forEach((m, i) => {
     const ph = m.userData.medalPhase ?? i
-    const lenF = (m.userData.medalLen || 0.45) / 0.5
-    // prevládajúci smer od okna (+X) + nárazy
-    const blow = want ? 0.04 * open * gust : 0
-    m.rotation.z =
-      blow +
-      Math.sin(t * speed + ph) * ampZ * lenF +
-      Math.sin(t * speed * 1.7 + ph * 1.3) * ampZ * 0.35
-    m.rotation.x =
-      Math.sin(t * (speed * 0.7) + ph * 0.8) * ampX * lenF +
-      (want ? Math.sin(t * 3.2 + ph) * 0.02 * gust : 0)
+    const lenF = 0.85 + (m.userData.medalLen || 0.4) * 0.3
+    // cieľ: mierny náklon od okna (+Z rotácia = do strany) + jemné kývanie
+    const idleZ = Math.sin(t * 0.55 + ph) * 0.018 * lenF
+    const idleX = Math.sin(t * 0.42 + ph * 0.7) * 0.01
+    const windZ =
+      strength * (0.07 + 0.04 * Math.sin(t * 0.9 + ph)) * lenF +
+      Math.sin(t * 1.35 + ph * 1.1) * 0.025 * strength
+    const windX =
+      strength * 0.03 * Math.sin(t * 0.75 + ph * 0.9) +
+      Math.sin(t * 1.6 + ph) * 0.012 * strength
+    const targetZ = idleZ + (windy ? windZ : 0)
+    const targetX = idleX + (windy ? windX : 0)
+
+    // spring-damper → prirodzené doznávanie
+    const stiff = windy ? 14 : 9
+    const damp = windy ? 5.5 : 7
+    const az = m.userData.angZ || 0
+    const ax = m.userData.angX || 0
+    let vz = m.userData.velZ || 0
+    let vx = m.userData.velX || 0
+    vz += (targetZ - az) * stiff * dt
+    vx += (targetX - ax) * stiff * dt
+    vz *= Math.max(0, 1 - damp * dt)
+    vx *= Math.max(0, 1 - damp * dt)
+    m.userData.angZ = az + vz * dt
+    m.userData.angX = ax + vx * dt
+    m.userData.velZ = vz
+    m.userData.velX = vx
+    // clamp — stužky sa neprevrátia do vodorovna
+    m.rotation.z = Math.max(-0.22, Math.min(0.28, m.userData.angZ))
+    m.rotation.x = Math.max(-0.12, Math.min(0.12, m.userData.angX))
   })
 }
 
@@ -3259,7 +3508,13 @@ function setTimeOfDay(i, q, skipSave, fromAuto = false) {
 function applyTime(dt) {
   const p = P[S.i],
     k = 1 - 0.02 ** dt
-  if (drag < 0) S.open += (S.openT - S.open) * k
+  if (drag < 0) {
+    // otváranie rýchlejšie, zatváranie pomalšie + dojazdom
+    const closing = S.openT < S.open - 0.001
+    const openRate = closing ? 1.55 : 3.2
+    S.open += (S.openT - S.open) * (1 - Math.exp(-openRate * dt))
+    if (Math.abs(S.openT - S.open) < 0.002) S.open = S.openT
+  }
   S.ceil += (S.ceilT - S.ceil) * k
   S.lamp += (S.lampT - S.lamp) * k
   S.sp.lerp(TV.set(...p.sp), k)
@@ -3300,8 +3555,26 @@ function applyTime(dt) {
   ns.fog.density = 0.01 + S.air * 0.03
   nlamp.intensity = Math.max(0, 1.2 - S.si * 0.35 * tr * 2)
   slats.forEach((s) => (s.rotation.z = S.blade * 1.3))
-  sashL.rotation.y = S.open * 1.4
-  sashR.rotation.y = -S.open * 1.4
+  // krídla: smoothstep + mierny stagger (pravé krídlo pri zatváraní oneskorené)
+  {
+    const u = Math.max(0, Math.min(1, S.open))
+    const sm = u * u * (3 - 2 * u)
+    const closing = S.openT < 0.5
+    let left = sm,
+      right = sm
+    if (closing) {
+      left = Math.min(1, sm * 1.12)
+      right = Math.max(0, (sm - 0.06) / 0.94)
+    } else {
+      right = Math.min(1, sm * 1.08)
+      left = Math.max(0, (sm - 0.04) / 0.96)
+    }
+    // jemný „usadok“ na konci zatvorenia
+    const settle =
+      closing && u < 0.18 ? Math.sin((1 - u / 0.18) * Math.PI) * 0.035 * (1 - u / 0.18) : 0
+    sashL.rotation.y = Math.max(0, left - settle * 0.4) * 1.4
+    sashR.rotation.y = -Math.max(0, right - settle) * 1.4
+  }
   // strop a lampa sú nezávislé
   ceilL.intensity = S.ceil * 7
   deskL.intensity = S.lamp * 6.5
@@ -3745,7 +4018,7 @@ function isNoteOffBoard(mesh) {
   return p.x < -0.72 || p.x > 0 || p.y < 1.72 || p.y > 2.2
 }
 const HINT_DEFAULT =
-  'E = sadnúť · Papier: klik / P = písať · nástenka: Shift+klik / Delete'
+  'E = sadnúť · Papier: klik / P · Kvetina: klik / W = zaliať · nástenka: Shift+klik / Delete'
 const HINT_BOARD =
   'Nástenka: ťahaj lístky po korku · dvojklik = hod do koša · Shift+klik = zmazať · Esc = späť'
 const HINT_TRASH = 'Kôš: pohľad na neporiadok · klik na pedál alebo Esc = späť'
@@ -3944,7 +4217,6 @@ function hudAct(x, y, start) {
         if (k === 'open') {
           S.openT = S[k]
           setSw('bWin', S.openT > 0.5)
-          if (S.openT <= 0.5) S.open = 0
           if (A.ctx) applyMix()
         }
         hudDirty = true
@@ -4074,7 +4346,14 @@ cv.addEventListener('pointermove', (e) => {
     const onChair = chairG && pick(e, chairG)
     const onTrash = !!pickTrash(e)
     cv.style.cursor =
-      onChair || onPaper || onTrash || pick(e, lampG) || pick(e, switchBox) || pick(e, ceilHit)
+      onChair ||
+      onPaper ||
+      onTrash ||
+      pick(e, lampG) ||
+      pick(e, switchBox) ||
+      pick(e, ceilHit) ||
+      (plantG && pick(e, plantG)) ||
+      (waterCanG && pick(e, waterCanG))
         ? 'pointer'
         : 'default'
   }
@@ -4145,6 +4424,8 @@ cv.addEventListener('click', (e) => {
   if (pick(e, lampG)) toggleLamp()
   else if (pick(e, switchBox) || pick(e, ceilHit)) toggleCeil()
   else if (!pano && pickTrash(e)) toggleTrash()
+  else if (plantG && pick(e, plantG)) startWaterPlant()
+  else if (waterCanG && pick(e, waterCanG)) startWaterPlant()
 })
 cv.addEventListener(
   'wheel',
@@ -4204,6 +4485,7 @@ addEventListener('keydown', (e) => {
     openPaperDialog()
   }
   if ((e.key === 'v' || e.key === 'V') && sitting) setPano(!pano)
+  if ((e.key === 'w' || e.key === 'W') && !typingUi()) startWaterPlant()
 })
 function setFov(v) {
   if (Math.abs(v - camera.fov) < 0.002) return
@@ -4342,7 +4624,6 @@ P.forEach((p, i) => {
 $('bWin').onclick = () => {
   S.openT = S.openT > 0.5 ? 0 : 1
   setSw('bWin', S.openT > 0.5)
-  if (S.openT <= 0.5) S.open = 0
   sfxWindow(S.openT > 0.5)
   if (A.ctx) applyMix()
   savePrefs()
@@ -4361,6 +4642,7 @@ $('bBack').onclick = resetView
 $('bSit').onclick = () => setSitting(!sitting)
 $('bRad').onclick = () => setRadiator(!radiatorOn)
 $('bTrash').onclick = () => toggleTrash()
+if ($('bWater')) $('bWater').onclick = () => startWaterPlant()
 $('bPwrAoc').onclick = () => togglePwr('aoc')
 $('bPwrDell').onclick = () => togglePwr('dell')
 $('bPwrMac').onclick = () => togglePwr('mac')
@@ -4461,6 +4743,7 @@ renderer.setAnimationLoop(() => {
     fr++
     applyTime(dt)
     updateClimate(dt)
+    updateWaterPlant(dt, t)
     const kz = 1 - 0.002 ** dt
     if (pano) {
       controls.enabled = false
@@ -4517,7 +4800,7 @@ renderer.setAnimationLoop(() => {
       $('bBack').style.display = bb
       lastBB = bb
     }
-    updateMedalsWind(t)
+    updateMedalsWind(t, dt)
     leds.forEach((l, i) => (l.visible = Math.sin(t * 9 + i * 2.1) > -0.3))
     applyMacLid(dt)
     updateTrashLid(dt)
