@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="sk"><head>
+<link rel="stylesheet" href="css/app.css"><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Desk study – Aperture and air</title>
+
+</head><body>
+
+<div id="ui"><div class="hd"><div><h1>Desk study</h1><small>Aperture and air</small></div><button id="bFold" title="Zbaliť / rozbaliť">–</button></div>
+<div id="body">
+<div class="lab">Čas dňa</div><div class="seg" id="days"></div>
+<div class="lab">Izba</div>
+<div class="row"><span>Okno otvorené</span><button class="sw on" id="bWin" aria-pressed="true" aria-label="Okno"></button></div>
+<div class="row"><span>Tmavý režim (lampa)</span><button class="sw" id="bMode" aria-pressed="false" aria-label="Tmavý režim"></button></div>
+<div class="row"><span>Zvuky</span><button class="sw on" id="bSnd" aria-pressed="true" aria-label="Zvuky"></button></div>
+<div class="row"><span>Automatická zmena dňa</span><button class="sw" id="bAuto" aria-pressed="false" aria-label="Automatický deň"></button></div>
+<div class="row"><span>Nástenka</span><button type="button" id="bNote">+ Nová poznámka</button></div>
+<div class="row"><span>Kôš (pedál)</span><button class="sw" id="bTrash" aria-pressed="false" aria-label="Kôš"></button></div>
+<div class="row"><span>Papier na stole</span><button type="button" id="bPaper">Prečítať papier</button></div>
+<div class="lab">Pohľad</div>
+<div class="seg"><button id="bOrb" class="on">Orbit</button><button id="bTop">Zhora</button><button id="bPano">360°</button><button id="bReset">Reset</button></div>
+<div class="row"><span>Sneženie (Mesiac)</span><button class="sw" id="bSnow" aria-pressed="false" aria-label="Sneh"></button></div>
+<div class="row"><span>Sediť / vstať</span><button class="sw" id="bSit" aria-pressed="false" aria-label="Sedenie"></button></div>
+<div class="lab">Technika</div>
+<div class="row"><span>Monitor AOC</span><button class="sw on" id="bPwrAoc" aria-pressed="true" aria-label="Monitor AOC"></button></div>
+<div class="row"><span>Monitor Dell</span><button class="sw on" id="bPwrDell" aria-pressed="true" aria-label="Monitor Dell"></button></div>
+<div class="row"><span>MacBook</span><button class="sw on" id="bPwrMac" aria-pressed="true" aria-label="MacBook"></button></div>
+</div></div>
+<button id="bBack">← Späť na pohľad na stôl</button>
+<div id="noteDlg" role="dialog" aria-labelledby="noteDlgTitle" aria-modal="true">
+<div class="card">
+<h2 id="noteDlgTitle">Nový lístok</h2>
+<p>Text na korku. Ťahaj lístky po korku. <strong>Dvojklik</strong> = hod do koša. Jeden klik = odkaz. <strong>Shift+klik</strong> / Delete = zmazať.</p>
+<label for="noteL1">Riadok 1</label>
+<input id="noteL1" type="text" maxlength="36" autocomplete="off" placeholder="napr. GitHub">
+<label for="noteL2">Riadok 2 (voliteľné)</label>
+<input id="noteL2" type="text" maxlength="36" autocomplete="off" placeholder="napr. môj projekt">
+<label for="noteUrl">Odkaz (URL)</label>
+<input id="noteUrl" type="url" inputmode="url" autocomplete="off" placeholder="https://…">
+<div class="acts">
+<button type="button" id="noteCancel">Zrušiť</button>
+<button type="button" id="noteSave" class="primary">Pridať na nástenku</button>
+</div>
+</div>
+</div>
+<div id="birdTip" aria-live="polite"></div>
+<div id="paperDlg" role="dialog" aria-labelledby="paperDlgTitle" aria-modal="true">
+<div class="card">
+<h2 id="paperDlgTitle">Papier na stole</h2>
+<p>Bežný zápisník – text ostane uložený v prehliadači.</p>
+<textarea id="paperText" spellcheck="true" placeholder="Sem môžeš písať poznámky, nápady, učivo…"></textarea>
+<div class="acts">
+<button type="button" id="paperCancel">Zavrieť</button>
+<button type="button" id="paperSave" class="primary">Uložiť na papier</button>
+</div>
+</div>
+</div>
+<div id="hint">Technika: AOC / Dell / MacBook · kôš = pedál · nástenka: Shift+klik / Delete = zmazať lístok · E = sedenie</div>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"}}</script>
+<script type="module" src="src/main.js"></script></body></html>
