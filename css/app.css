@@ -19,6 +19,69 @@ canvas {
     Menlo,
     monospace;
   pointer-events: none;
+  max-width: calc(100vw - 200px);
+}
+#climate {
+  position: fixed;
+  right: 14px;
+  bottom: 14px;
+  min-width: 148px;
+  padding: 12px 14px;
+  background: var(--glass);
+  -webkit-backdrop-filter: blur(18px) saturate(1.35);
+  backdrop-filter: blur(18px) saturate(1.35);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  color: var(--ink);
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.4);
+  font:
+    13px / 1.35 Georgia,
+    "Times New Roman",
+    serif;
+}
+.climate-day {
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--mut);
+  margin-bottom: 2px;
+}
+.climate-temp {
+  font-size: 28px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+  color: var(--ink);
+}
+.climate-temp.cold {
+  color: #8ec8e8;
+}
+.climate-temp.warm {
+  color: #f0a060;
+}
+.climate-temp.hot {
+  color: #e85a24;
+}
+.climate-unit {
+  font-size: 15px;
+  font-weight: 400;
+  color: var(--mut);
+}
+.climate-out {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--mut);
+}
+.climate-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+  color: var(--ink);
 }
 
 :root {
@@ -380,25 +443,4 @@ canvas {
   border-color: rgba(232, 90, 36, 0.8);
   color: #fff8f0;
   font-weight: 600;
-}
-#birdTip {
-  position: fixed;
-  right: 14px;
-  top: 14px;
-  max-width: 220px;
-  padding: 10px 14px;
-  background: var(--glass);
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  color: var(--ink);
-  font:
-    12px Georgia,
-    serif;
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 0.35s;
-  line-height: 1.35;
-}
-#birdTip.show {
-  opacity: 1;
 }

@@ -12,7 +12,8 @@
 <div class="lab">Čas dňa</div><div class="seg" id="days"></div>
 <div class="lab">Izba</div>
 <div class="row"><span>Okno otvorené</span><button type="button" class="sw on" id="bWin" aria-pressed="true" aria-label="Okno"></button></div>
-<div class="row"><span>Tmavý režim (lampa)</span><button type="button" class="sw" id="bMode" aria-pressed="false" aria-label="Tmavý režim"></button></div>
+<div class="row"><span>Stropné svetlo</span><button type="button" class="sw on" id="bCeil" aria-pressed="true" aria-label="Stropné svetlo"></button></div>
+<div class="row"><span>Stolová lampa</span><button type="button" class="sw" id="bLamp" aria-pressed="false" aria-label="Stolová lampa"></button></div>
 <div class="row"><span>Zvuky</span><button type="button" class="sw on" id="bSnd" aria-pressed="true" aria-label="Zvuky"></button></div>
 <div class="row"><span>Automatická zmena dňa</span><button type="button" class="sw" id="bAuto" aria-pressed="false" aria-label="Automatický deň"></button></div>
 <div class="row"><span>Nástenka</span><button type="button" id="bNote">+ Nová poznámka</button></div>
@@ -20,8 +21,7 @@
 <div class="row"><span>Papier na stole</span><button type="button" id="bPaper">Čítať / písať</button></div>
 <div class="lab">Pohľad</div>
 <div class="seg"><button type="button" id="bOrb" class="on">Orbit</button><button type="button" id="bTop">Zhora</button><button type="button" id="bPano">360°</button><button type="button" id="bReset">Reset</button></div>
-<div class="row"><span>Sneženie (Mesiac)</span><button type="button" class="sw" id="bSnow" aria-pressed="false" aria-label="Sneh"></button></div>
-<div class="row"><span>Sediť / vstať</span><button type="button" class="sw" id="bSit" aria-pressed="false" aria-label="Sedenie"></button></div>
+<div class="row"><span>Sedieť / vstať</span><button type="button" class="sw" id="bSit" aria-pressed="false" aria-label="Sedieť"></button></div>
 <div class="lab">Technika</div>
 <div class="row"><span>Monitor AOC</span><button type="button" class="sw on" id="bPwrAoc" aria-pressed="true" aria-label="Monitor AOC"></button></div>
 <div class="row"><span>Monitor Dell</span><button type="button" class="sw on" id="bPwrDell" aria-pressed="true" aria-label="Monitor Dell"></button></div>
@@ -44,7 +44,6 @@
 </div>
 </div>
 </div>
-<div id="birdTip" aria-live="polite"></div>
 <div id="paperDlg" role="dialog" aria-labelledby="paperDlgTitle" aria-modal="true">
 <div class="card">
 <h2 id="paperDlgTitle">Papier na stole</h2>
@@ -61,7 +60,13 @@
 </div>
 </div>
 </div>
-<div id="hint">Technika: AOC / Dell / MacBook · kôš = pedál · nástenka: Shift+klik / Delete = zmazať lístok · E = sedenie</div>
+<div id="hint">E = sadnúť · Papier: klik / P · nástenka: Shift+klik / Delete</div>
+<div id="climate" aria-live="polite">
+  <div class="climate-day" id="climateDay">Ráno</div>
+  <div class="climate-temp"><span id="climateTemp">21.0</span><span class="climate-unit"> °C</span></div>
+  <div class="climate-out">Vonku <span id="climateOut">14</span>°</div>
+  <div class="climate-row"><span>Radiátor</span><button type="button" class="sw" id="bRad" aria-pressed="false" aria-label="Radiátor"></button></div>
+</div>
 <script type="module" src="/src/main.js"></script>
 </body>
 </html>

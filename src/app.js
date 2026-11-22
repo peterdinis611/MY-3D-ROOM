@@ -45,60 +45,260 @@ const DESK_TOP = 0.765,
   RISER_TOP = 0.948
 const onDesk = (x, z, r = 0.002) => [x, DESK_TOP + r, z]
 const cableMats = {
-  white: new THREE.MeshStandardMaterial({ color: 0xf1efeb, roughness: 0.82, metalness: 0 }),
-  black: new THREE.MeshStandardMaterial({ color: 0x1a1a1c, roughness: 0.86, metalness: 0.02 }),
-  pvc: new THREE.MeshStandardMaterial({ color: 0xeae8e4, roughness: 0.78, metalness: 0 }),
+  white: new THREE.MeshStandardMaterial({ color: 0xf3f1ec, roughness: 0.82, metalness: 0.02 }),
+  black: new THREE.MeshStandardMaterial({ color: 0x141416, roughness: 0.88, metalness: 0.03 }),
+  pvc: new THREE.MeshStandardMaterial({ color: 0xe8e5df, roughness: 0.76, metalness: 0.02 }),
+  braid: new THREE.MeshStandardMaterial({ color: 0xcfcac2, roughness: 0.58, metalness: 0.1 }),
+  charcoal: new THREE.MeshStandardMaterial({ color: 0x2a2a2e, roughness: 0.7, metalness: 0.08 }),
+  teal: new THREE.MeshStandardMaterial({ color: 0x2a6b6e, roughness: 0.65, metalness: 0.05 }),
 }
+const chromePlug = () =>
+  new THREE.MeshStandardMaterial({ color: 0xc9c9ce, metalness: 0.62, roughness: 0.28 })
+const plasticDark = () =>
+  new THREE.MeshStandardMaterial({ color: 0x1c1c20, roughness: 0.48, metalness: 0.12 })
 const V = (...a) => new THREE.Vector3(...a)
 
-function cableSeg(a, b, mat, parent, r) {
-  const va = new THREE.Vector3(a[0], a[1], a[2]),
-    vb = new THREE.Vector3(b[0], b[1], b[2])
-  const onDesk = va.y < DESK_TOP + 0.03 && vb.y < DESK_TOP + 0.03
-  const sag = onDesk ? 0.0032 : 0.009
-  const mid = va.clone().lerp(vb, 0.5)
-  if (onDesk) mid.y = DESK_TOP + r * 1.2 - sag
-  else mid.y -= sag
-  const curve = new THREE.QuadraticBezierCurve3(va, mid, vb)
-  const segs = Math.max(6, Math.ceil(va.distanceTo(vb) * 40))
-  const mesh = new THREE.Mesh(new THREE.TubeGeometry(curve, segs, r, 5, false), mat)
+function layCable(anchors, mat, parent, r = 0.002, opts = {}) {
+  const pts = anchors.map((a) => new THREE.Vector3(a[0], a[1], a[2]))
+  const sag = opts.sag ?? 1
+  const tension = opts.tension ?? 0.35
+  const nearEnd = opts.protectEnds ?? 2
+  for (let i = 1; i < pts.length - 1; i++) {
+    const a = pts[i - 1],
+      b = pts[i],
+      c = pts[i + 1]
+    const deskish = b.y < DESK_TOP + 0.055
+    const span = a.distanceTo(c)
+    const edge = i <= nearEnd || i >= pts.length - 1 - nearEnd
+    if (deskish) {
+      b.y = Math.min(b.y, DESK_TOP + r * 1.15 - Math.min(0.008, span * 0.014) * sag)
+      // zvlnenie len v strede trasy — pri portoch by pretínalo notebook
+      if (!edge) {
+        const wiggle = Math.sin(i * 1.7 + span * 8) * Math.min(0.012, span * 0.03) * sag
+        b.x += wiggle * 0.35
+        b.z += wiggle * 0.55
+      }
+    } else {
+      b.y -= Math.min(0.028, span * 0.055) * sag
+    }
+  }
+  const curve = new THREE.CatmullRomCurve3(pts, false, 'catmullrom', tension)
+  const len = curve.getLength()
+  const segs = Math.max(40, Math.ceil(len * 90))
+  const mesh = new THREE.Mesh(new THREE.TubeGeometry(curve, segs, r, 8, false), mat)
   mesh.castShadow = mesh.receiveShadow = true
   parent.add(mesh)
+  const t0 = curve.getTangent(0).normalize()
+  const t1 = curve.getTangent(1).normalize()
+  return {
+    end0: pts[0].clone(),
+    end1: pts[pts.length - 1].clone(),
+    tan0: t0,
+    tan1: t1,
+    mesh,
+    curve,
+  }
 }
-function layCable(anchors, mat, parent, r = 0.002) {
-  for (let i = 0; i < anchors.length - 1; i++) cableSeg(anchors[i], anchors[i + 1], mat, parent, r)
-  return { end0: new THREE.Vector3(...anchors[0]), end1: new THREE.Vector3(...anchors.at(-1)) }
+function orientAlong(g, from, to) {
+  const dir = new THREE.Vector3().subVectors(to, from)
+  if (dir.lengthSq() < 1e-8) return
+  g.quaternion.setFromUnitVectors(new THREE.Vector3(1, 0, 0), dir.normalize())
 }
-function usbPlug(parent, p, intoLaptop = false) {
-  const g = new THREE.Group()
+function orientByTangent(g, p, tan, flip = false) {
   g.position.copy(p)
+  const dir = tan.clone().normalize()
+  if (flip) dir.negate()
+  g.quaternion.setFromUnitVectors(new THREE.Vector3(1, 0, 0), dir)
+}
+function usbPlug(parent, p, intoLaptop = false, toward = null, tan = null) {
+  const g = new THREE.Group()
+  if (tan) orientByTangent(g, p, tan, intoLaptop)
+  else {
+    g.position.copy(p)
+    if (toward) orientAlong(g, p, toward)
+  }
+  const shellMat = intoLaptop ? cableMats.braid : cableMats.charcoal
   const shell = new THREE.Mesh(
-    new THREE.BoxGeometry(
-      intoLaptop ? 0.026 : 0.018,
-      intoLaptop ? 0.007 : 0.005,
-      intoLaptop ? 0.011 : 0.008
-    ),
-    cableMats.white
+    new THREE.BoxGeometry(intoLaptop ? 0.03 : 0.022, intoLaptop ? 0.009 : 0.007, intoLaptop ? 0.013 : 0.01),
+    shellMat
   )
-  const tip = new THREE.Mesh(
-    new THREE.BoxGeometry(0.009, 0.004, 0.006),
-    new THREE.MeshStandardMaterial({ color: 0xc8c8cc, metalness: 0.35, roughness: 0.4 })
+  const tip = new THREE.Mesh(new THREE.BoxGeometry(0.011, 0.0044, 0.007), chromePlug())
+  tip.position.set(intoLaptop ? -0.018 : -0.014, 0, 0)
+  const boot = new THREE.Mesh(
+    new THREE.CylinderGeometry(intoLaptop ? 0.0045 : 0.0036, intoLaptop ? 0.0032 : 0.0026, 0.016, 12),
+    shellMat
   )
-  tip.position.set(intoLaptop ? -0.0145 : -0.011, 0, 0)
-  g.add(shell, tip)
+  boot.rotation.z = Math.PI / 2
+  boot.position.x = intoLaptop ? 0.018 : 0.014
+  const strain = new THREE.Mesh(
+    new THREE.CylinderGeometry(intoLaptop ? 0.003 : 0.0024, intoLaptop ? 0.0042 : 0.0034, 0.008, 10),
+    shellMat
+  )
+  strain.rotation.z = Math.PI / 2
+  strain.position.x = intoLaptop ? 0.028 : 0.022
+  g.add(shell, tip, boot, strain)
   parent.add(g)
   return g
 }
-function dcJack(parent, p) {
+function hdmiPlug(parent, p, tan = null, toward = null) {
   const g = new THREE.Group()
-  g.position.copy(p)
-  const b = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.0075, 0.0075, 0.018, 16),
-    new THREE.MeshStandardMaterial({ color: 0x252528, roughness: 0.5, metalness: 0.15 })
-  )
-  b.rotation.x = Math.PI / 2
-  g.add(b)
+  if (tan) orientByTangent(g, p, tan, true)
+  else {
+    g.position.copy(p)
+    if (toward) orientAlong(g, p, toward)
+  }
+  const body = new THREE.Mesh(new THREE.BoxGeometry(0.028, 0.01, 0.016), plasticDark())
+  const tip = new THREE.Mesh(new THREE.BoxGeometry(0.014, 0.006, 0.012), chromePlug())
+  tip.position.x = -0.018
+  const boot = new THREE.Mesh(new THREE.CylinderGeometry(0.004, 0.003, 0.014, 10), cableMats.black)
+  boot.rotation.z = Math.PI / 2
+  boot.position.x = 0.018
+  g.add(body, tip, boot)
   parent.add(g)
+  return g
+}
+function magsafePlug(parent, p, tan = null) {
+  const g = new THREE.Group()
+  if (tan) orientByTangent(g, p, tan, true)
+  else g.position.copy(p)
+  const head = new THREE.Mesh(new THREE.BoxGeometry(0.018, 0.007, 0.014), cableMats.braid)
+  const tip = new THREE.Mesh(new THREE.BoxGeometry(0.008, 0.004, 0.01), chromePlug())
+  tip.position.x = -0.011
+  const led = new THREE.Mesh(
+    new THREE.BoxGeometry(0.004, 0.002, 0.006),
+    new THREE.MeshBasicMaterial({ color: 0x5ad07a })
+  )
+  led.position.set(0.002, 0.004, 0)
+  const boot = new THREE.Mesh(new THREE.CylinderGeometry(0.0038, 0.0028, 0.016, 10), cableMats.braid)
+  boot.rotation.z = Math.PI / 2
+  boot.position.x = 0.014
+  g.add(head, tip, led, boot)
+  parent.add(g)
+  return g
+}
+function dcJack(parent, p, toward = null, tan = null) {
+  const g = new THREE.Group()
+  if (tan) orientByTangent(g, p, tan, true)
+  else {
+    g.position.copy(p)
+    if (toward) orientAlong(g, p, toward)
+  }
+  const body = new THREE.Mesh(new THREE.CylinderGeometry(0.0075, 0.0082, 0.024, 14), plasticDark())
+  body.rotation.z = Math.PI / 2
+  const pin = new THREE.Mesh(new THREE.CylinderGeometry(0.0023, 0.0023, 0.011, 10), chromePlug())
+  pin.rotation.z = Math.PI / 2
+  pin.position.x = -0.015
+  const ring = new THREE.Mesh(
+    new THREE.TorusGeometry(0.0076, 0.0013, 8, 18),
+    new THREE.MeshStandardMaterial({ color: 0x3a3a40, roughness: 0.38, metalness: 0.35 })
+  )
+  ring.rotation.y = Math.PI / 2
+  ring.position.x = -0.005
+  const boot = new THREE.Mesh(new THREE.CylinderGeometry(0.0045, 0.0032, 0.014, 10), cableMats.pvc)
+  boot.rotation.z = Math.PI / 2
+  boot.position.x = 0.016
+  g.add(body, pin, ring, boot)
+  parent.add(g)
+  return g
+}
+function iecPlug(parent, p, tan = null) {
+  const g = new THREE.Group()
+  if (tan) orientByTangent(g, p, tan, false)
+  else g.position.copy(p)
+  const body = new THREE.Mesh(new THREE.BoxGeometry(0.034, 0.018, 0.022), plasticDark())
+  const prongs = chromePlug()
+  for (const [dx, dy] of [
+    [-0.006, 0.004],
+    [-0.006, -0.004],
+    [0.006, 0],
+  ]) {
+    const pin = new THREE.Mesh(new THREE.BoxGeometry(0.008, 0.0025, 0.0025), prongs)
+    pin.position.set(-0.02, dy, dx * 0.4)
+    g.add(pin)
+  }
+  const boot = new THREE.Mesh(new THREE.CylinderGeometry(0.005, 0.0035, 0.02, 10), cableMats.pvc)
+  boot.rotation.z = Math.PI / 2
+  boot.position.x = 0.024
+  g.add(body, boot)
+  parent.add(g)
+  return g
+}
+function rj45Plug(parent, p, tan = null) {
+  const g = new THREE.Group()
+  if (tan) orientByTangent(g, p, tan, true)
+  else g.position.copy(p)
+  const body = new THREE.Mesh(new THREE.BoxGeometry(0.022, 0.01, 0.014), cableMats.teal)
+  const tip = new THREE.Mesh(new THREE.BoxGeometry(0.01, 0.008, 0.011), M(0xd8d8dc, 0.4, 0.15))
+  tip.position.x = -0.014
+  const clip = new THREE.Mesh(new THREE.BoxGeometry(0.008, 0.003, 0.006), M(0xb0b0b4, 0.5))
+  clip.position.set(-0.01, 0.006, 0)
+  const boot = new THREE.Mesh(new THREE.CylinderGeometry(0.0035, 0.0026, 0.012, 10), cableMats.teal)
+  boot.rotation.z = Math.PI / 2
+  boot.position.x = 0.014
+  g.add(body, tip, clip, boot)
+  parent.add(g)
+  return g
+}
+function ferrite(parent, p, toward = null, tan = null) {
+  const g = new THREE.Group()
+  if (tan) orientByTangent(g, p, tan, false)
+  else {
+    g.position.copy(p)
+    if (toward) orientAlong(g, p, toward)
+  }
+  const bead = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.0075, 0.0075, 0.022, 14),
+    new THREE.MeshStandardMaterial({ color: 0x18181a, roughness: 0.75, metalness: 0.04 })
+  )
+  bead.rotation.z = Math.PI / 2
+  const seam = new THREE.Mesh(
+    new THREE.BoxGeometry(0.0225, 0.0015, 0.0155),
+    new THREE.MeshStandardMaterial({ color: 0x2e2e32, roughness: 0.6 })
+  )
+  g.add(bead, seam)
+  parent.add(g)
+  return g
+}
+function cableClip(parent, x, z, yaw = 0.1) {
+  const c = box(parent, 0.02, 0.007, 0.014, M(0x222226, 0.5), x, DESK_TOP + 0.0045, z)
+  c.rotation.y = yaw
+  return c
+}
+function cableTie(parent, p, tan) {
+  const g = new THREE.Group()
+  orientByTangent(g, p, tan || new THREE.Vector3(1, 0, 0), false)
+  const ring = new THREE.Mesh(
+    new THREE.TorusGeometry(0.0045, 0.0011, 6, 14),
+    new THREE.MeshStandardMaterial({ color: 0x111114, roughness: 0.55 })
+  )
+  ring.rotation.y = Math.PI / 2
+  g.add(ring)
+  parent.add(g)
+  return g
+}
+function cableCoil(parent, cx, cy, cz, turns = 3, r = 0.035, tubeR = 0.0024, mat = cableMats.pvc) {
+  const pts = []
+  const steps = Math.max(24, Math.ceil(turns * 16))
+  for (let i = 0; i <= steps; i++) {
+    const u = i / steps
+    const a = u * turns * Math.PI * 2
+    pts.push(
+      new THREE.Vector3(
+        cx + Math.cos(a) * r,
+        cy + 0.01 + u * turns * 0.011,
+        cz + Math.sin(a) * r * 0.75
+      )
+    )
+  }
+  // vstup / výstup, aby Frenet rámček neskolaboval
+  pts.unshift(new THREE.Vector3(cx + r + 0.02, cy + 0.008, cz))
+  pts.push(new THREE.Vector3(cx - r - 0.015, cy + 0.01 + turns * 0.011, cz + 0.02))
+  const curve = new THREE.CatmullRomCurve3(pts, false, 'catmullrom', 0.25)
+  const segs = Math.max(48, steps * 2)
+  const mesh = new THREE.Mesh(new THREE.TubeGeometry(curve, segs, tubeR, 6, false), mat)
+  mesh.castShadow = true
+  parent.add(mesh)
+  return mesh
 }
 function txt(g, s, x, y, c = '#c9d1d9', f = '12px ui-monospace,Menlo,monospace') {
   g.fillStyle = c
@@ -126,8 +326,10 @@ const S = {
   blade: 0.35,
   open: 1,
   openT: 1,
-  dark: 0,
-  darkT: 0,
+  ceil: 1,
+  ceilT: 1,
+  lamp: 0,
+  lampT: 0,
   air: 0.5,
   drift: true,
   study: false,
@@ -393,11 +595,88 @@ function buildRoom() {
   windowHit.name = 'windowHit'
   scene.add(windowHit)
   // radiator (far left of back wall)
-  const rad = M(0xf7f7f5, 0.4)
-  for (let i = 0; i < 9; i++) box(scene, 0.07, 1.7, 0.1, rad, -2.3 + i * 0.075, 1.05, -0.54)
+  radMats = []
+  for (let i = 0; i < 9; i++) {
+    const mat = new THREE.MeshStandardMaterial({
+      color: 0xf7f7f5,
+      roughness: 0.4,
+      metalness: 0.05,
+      emissive: 0x000000,
+      emissiveIntensity: 0,
+    })
+    radMats.push(mat)
+    box(scene, 0.07, 1.7, 0.1, mat, -2.3 + i * 0.075, 1.05, -0.54)
+  }
   // light switch + plate
   switchBox = box(scene, 0.09, 0.09, 0.015, M(0xe8dcc0, 0.5), 2.05, 1.2, -0.59)
   box(scene, 0.018, 0.04, 0.012, M(0xffffff, 0.4), 2.05, 1.2, -0.578)
+}
+
+/* 05b-klima-teplota-radiator.js */
+let radMats = [],
+  radiatorOn = false,
+  roomTemp = 20,
+  outdoorTemp = 14
+// vonkajšia teplota podľa času dňa (°C)
+const OUT_TEMP = [7, 12, 22, 24, 15, 8, 2]
+function outdoorForDay(i = S.i) {
+  return OUT_TEMP[Math.min(OUT_TEMP.length - 1, Math.max(0, i | 0))]
+}
+function roomTempTarget() {
+  const out = outdoorForDay()
+  let t = out + (radiatorOn ? 11 : -0.5)
+  if (windowIsOpen()) {
+    // otvorené okno ťahá k vonkajšej teplote
+    t = t * 0.35 + out * 0.65
+  } else {
+    t += radiatorOn ? 2.5 : 1.2 // zatvorená izba drží teplo
+  }
+  return t
+}
+function setRadiator(on, skipSave = false) {
+  radiatorOn = !!on
+  if ($('bRad')) setSw('bRad', radiatorOn)
+  syncRadiatorLook()
+  if (!skipSave) {
+    savePrefs()
+    sfxClick()
+  }
+}
+function syncRadiatorLook() {
+  const warm = radiatorOn ? 1 : 0
+  radMats.forEach((m) => {
+    m.emissive.setHex(warm ? 0xff6a2a : 0x000000)
+    m.emissiveIntensity = warm ? 0.35 : 0
+    m.color.setHex(warm ? 0xffe8dc : 0xf7f7f5)
+  })
+}
+function syncClimateUi() {
+  const dayEl = $('climateDay'),
+    tempEl = $('climateTemp'),
+    outEl = $('climateOut'),
+    wrap = tempEl?.parentElement
+  if (!dayEl || !tempEl) return
+  dayEl.textContent = typeof SK !== 'undefined' ? SK[S.i] : P[S.i]?.n || ''
+  tempEl.textContent = roomTemp.toFixed(1)
+  if (outEl) outEl.textContent = String(Math.round(outdoorTemp))
+  if (wrap) {
+    wrap.classList.toggle('cold', roomTemp < 16)
+    wrap.classList.toggle('warm', roomTemp >= 16 && roomTemp < 23)
+    wrap.classList.toggle('hot', roomTemp >= 23)
+  }
+}
+let climateUiAcc = 0
+function updateClimate(dt) {
+  outdoorTemp += (outdoorForDay() - outdoorTemp) * Math.min(1, dt * 0.6)
+  const tgt = roomTempTarget()
+  // radiátor ohrieva rýchlejšie; otvorené okno chladí / vyrovnáva rýchlejšie
+  const rate = radiatorOn ? 0.28 : windowIsOpen() ? 0.4 : 0.14
+  roomTemp += (tgt - roomTemp) * Math.min(1, dt * rate)
+  climateUiAcc += dt
+  if (climateUiAcc > 0.12) {
+    climateUiAcc = 0
+    syncClimateUi()
+  }
 }
 
 /* 06-builddesk-desk-riser-mat-pouch-cables.js */
@@ -430,7 +709,8 @@ function defaultPrefs() {
   return {
     day: 1,
     open: 1,
-    dark: 0,
+    ceil: 1,
+    lamp: 0,
     snd: 1,
     autoDay: 0,
     snow: 0,
@@ -440,12 +720,21 @@ function defaultPrefs() {
     pwrDell: 1,
     pwrMac: 1,
     uiFold: 0,
+    rad: 0,
   }
 }
 function loadPrefs() {
   try {
     const r = localStorage.getItem(PREF_LS)
-    return r ? { ...defaultPrefs(), ...JSON.parse(r) } : defaultPrefs()
+    if (!r) return defaultPrefs()
+    const raw = JSON.parse(r)
+    const p = { ...defaultPrefs(), ...raw }
+    // starý „tmavý režim“ → samostatná lampa / strop
+    if (!('ceil' in raw) && 'dark' in raw) {
+      p.ceil = raw.dark ? 0 : 1
+      p.lamp = raw.dark ? 1 : 0
+    }
+    return p
   } catch {
     return defaultPrefs()
   }
@@ -457,7 +746,8 @@ function savePrefs() {
       JSON.stringify({
         day: S.i,
         open: S.openT > 0.5 ? 1 : 0,
-        dark: S.darkT ? 1 : 0,
+        ceil: S.ceilT > 0.5 ? 1 : 0,
+        lamp: S.lampT > 0.5 ? 1 : 0,
         snd: A.on ? 1 : 0,
         autoDay: autoDay ? 1 : 0,
         snow: snowOn ? 1 : 0,
@@ -467,6 +757,7 @@ function savePrefs() {
         pwrDell: PWR.dell ? 1 : 0,
         pwrMac: PWR.mac ? 1 : 0,
         uiFold: $('ui')?.classList.contains('fold') ? 1 : 0,
+        rad: radiatorOn ? 1 : 0,
       })
     )
   } catch {}
@@ -476,14 +767,15 @@ function applyPrefs(p) {
   setTimeOfDay(day, true, true)
   S.openT = S.open = p.open ? 1 : 0
   setSw('bWin', !!p.open)
-  S.darkT = S.dark = p.dark ? 1 : 0
-  setSw('bMode', !!p.dark)
+  S.ceilT = S.ceil = p.ceil ? 1 : 0
+  S.lampT = S.lamp = p.lamp ? 1 : 0
+  if ($('bCeil')) setSw('bCeil', !!p.ceil)
+  if ($('bLamp')) setSw('bLamp', !!p.lamp)
   setSound(!!p.snd)
   setSw('bSnd', !!p.snd)
   autoDay = !!p.autoDay
   setSw('bAuto', autoDay)
-  snowOn = !!p.snow
-  setSw('bSnow', snowOn)
+  snowOn = false
   if (p.uiFold) {
     $('ui').classList.add('fold')
     $('bFold').textContent = '+'
@@ -498,6 +790,10 @@ function applyPrefs(p) {
   setSw('bPwrMac', PWR.mac)
   applyDevicePower(true)
   macLidAng = PWR.mac ? -0.35 : -0.02
+  setRadiator(!!p.rad, true)
+  outdoorTemp = outdoorForDay()
+  roomTemp = roomTempTarget()
+  syncClimateUi()
 }
 let paperG,
   paperMesh,
@@ -580,8 +876,8 @@ function paperDraw(c, w, h, text) {
   if (!body) {
     c.fillStyle = 'rgba(40,32,24,.55)'
     c.font = PAPER_FONT_PLACE
-    c.fillText('Klikni papier = prečítať · P = písať', 42, 64)
-    c.fillText('Klikni pero na stole = farba atramentu', 42, 100)
+    c.fillText('Klikni papier = prečítať · P = písať', 102, 64)
+    c.fillText('Klikni pero na stole = farba atramentu', 102, 100)
   } else {
     const lines = paperWrapLines(c, body, w - 130).slice(0, 18)
     c.fillStyle = ink
@@ -621,14 +917,70 @@ function setActivePen(id, { save = true, redraw = true } = {}) {
   }
   sfxClick()
 }
-function makePenMesh(id, r, len, mat, x, y, z, rz, ry) {
-  const m = cyl(paperG, r, len, mat, x, y, z)
-  m.rotation.z = rz
-  m.rotation.y = ry
-  m.castShadow = true
-  m.userData = { penId: id, baseY: y }
-  penMeshes[id] = m
+function addPenPart(g, mesh) {
+  mesh.castShadow = true
+  mesh.receiveShadow = true
+  g.add(mesh)
+  return mesh
+}
+/** Valec/kužeľ pozdĺž osi X (hrot smeruje k −X). */
+function penAlongX(geo, mat, x, y = 0) {
+  const m = new THREE.Mesh(geo, mat)
+  m.rotation.z = Math.PI / 2
+  m.position.set(x, y, 0)
   return m
+}
+function buildBallpointPen(id, bodyCol, x, y, z, yaw) {
+  const g = new THREE.Group()
+  g.position.set(x, y, z)
+  g.rotation.y = yaw
+  const body = M(bodyCol, 0.36, 0.2)
+  const chrome = M(0xc9cad0, 0.28, 0.88)
+  const tipM = M(0x2c2c30, 0.32, 0.75)
+  const inkDot = M(0x111111, 0.25, 0.9)
+  addPenPart(g, penAlongX(new THREE.CylinderGeometry(0.007, 0.0076, 0.085, 20), body, 0.002))
+  addPenPart(g, penAlongX(new THREE.CylinderGeometry(0.0064, 0.007, 0.014, 14), chrome, -0.046))
+  const cone = new THREE.Mesh(new THREE.ConeGeometry(0.0064, 0.015, 14), tipM)
+  cone.rotation.z = -Math.PI / 2
+  cone.position.set(-0.056, 0, 0)
+  addPenPart(g, cone)
+  const ball = new THREE.Mesh(new THREE.SphereGeometry(0.0018, 10, 8), inkDot)
+  ball.position.set(-0.064, 0, 0)
+  addPenPart(g, ball)
+  const clip = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.0024, 0.007), chrome)
+  clip.position.set(0.032, 0.0085, 0)
+  addPenPart(g, clip)
+  addPenPart(g, penAlongX(new THREE.CylinderGeometry(0.0052, 0.0056, 0.012, 12), chrome, 0.05))
+  addPenPart(g, penAlongX(new THREE.CylinderGeometry(0.0034, 0.0034, 0.01, 10), tipM, 0.06))
+  g.userData = { penId: id, baseY: y }
+  paperG.add(g)
+  penMeshes[id] = g
+  return g
+}
+function buildPencilPen(id, x, y, z, yaw) {
+  const g = new THREE.Group()
+  g.position.set(x, y, z)
+  g.rotation.y = yaw
+  const wood = M(0xd2a46a, 0.72, 0.04)
+  const paint = M(0xe8b84a, 0.55, 0.06)
+  const graphite = M(0x2a2a2a, 0.4, 0.15)
+  const ferrule = M(0xb8b8bc, 0.3, 0.82)
+  const eraser = M(0xe89aa0, 0.68, 0.04)
+  addPenPart(g, penAlongX(new THREE.CylinderGeometry(0.0062, 0.0062, 0.08, 6), paint, 0.004))
+  const woodTip = new THREE.Mesh(new THREE.ConeGeometry(0.0062, 0.018, 6), wood)
+  woodTip.rotation.z = -Math.PI / 2
+  woodTip.position.set(-0.048, 0, 0)
+  addPenPart(g, woodTip)
+  const lead = new THREE.Mesh(new THREE.ConeGeometry(0.0022, 0.009, 6), graphite)
+  lead.rotation.z = -Math.PI / 2
+  lead.position.set(-0.06, 0, 0)
+  addPenPart(g, lead)
+  addPenPart(g, penAlongX(new THREE.CylinderGeometry(0.0066, 0.0066, 0.012, 12), ferrule, 0.05))
+  addPenPart(g, penAlongX(new THREE.CylinderGeometry(0.006, 0.006, 0.012, 12), eraser, 0.062))
+  g.userData = { penId: id, baseY: y }
+  paperG.add(g)
+  penMeshes[id] = g
+  return g
 }
 function buildPaper() {
   const data = loadPaperData()
@@ -656,12 +1008,19 @@ function buildPaper() {
   paperMat = new THREE.MeshBasicMaterial({
     map: paperTex,
     toneMapped: false,
-    side: THREE.DoubleSide,
+    side: THREE.FrontSide,
   })
-  paperMesh = new THREE.Mesh(new THREE.PlaneGeometry(0.26, 0.18), paperMat)
+  const paperGeo = new THREE.PlaneGeometry(0.26, 0.18)
+  // 180° v UV: pôvodný mapping bol zrkadlený + hore nohou pri pohľade na čítanie
+  {
+    const uv = paperGeo.attributes.uv
+    for (let i = 0; i < uv.count; i++) uv.setXY(i, 1 - uv.getX(i), 1 - uv.getY(i))
+    uv.needsUpdate = true
+  }
+  paperMesh = new THREE.Mesh(paperGeo, paperMat)
   paperMesh.rotation.x = -Math.PI / 2
   paperMesh.position.set(0, 0.012, 0)
-  paperMesh.rotation.z = 0.04
+  paperMesh.rotation.z = 0.02
   paperMesh.renderOrder = 4
   paperMesh.castShadow = false
   paperMesh.receiveShadow = true
@@ -670,12 +1029,9 @@ function buildPaper() {
   paperReadL.position.set(0, 0.22, 0.02)
   paperReadL.visible = false
   paperG.add(paperReadL)
-  makePenMesh('red', 0.0055, 0.12, M(0xc01818, 0.35), -0.1, 0.009, -0.02, Math.PI / 2.05, 0.15)
-  box(paperG, 0.03, 0.0025, 0.005, M(0xc0c0c0, 0.25, 0.7), -0.105, 0.011, 0.018).rotation.y = 0.15
-  makePenMesh('blue', 0.0045, 0.105, M(0x1a3a8a, 0.35), -0.14, 0.008, -0.06, Math.PI / 2, -0.08)
-  makePenMesh('pencil', 0.0042, 0.095, M(0xc9a06c, 0.45), 0.09, 0.0075, -0.04, Math.PI / 2.08, 0.22)
-  box(paperG, 0.004, 0.004, 0.016, M(0x2a2418, 0.5), 0.102, 0.0095, -0.032).rotation.y = 0.22
-  cyl(paperG, 0.0032, 0.028, M(0xffa8a8, 0.35), 0.102, 0.025, -0.032).rotation.y = 0.22
+  buildBallpointPen('red', 0xb41c1c, 0.05, 0.014, 0.055, 0.35)
+  buildBallpointPen('blue', 0x1a3a8a, -0.05, 0.013, -0.06, -0.45)
+  buildPencilPen('pencil', 0.1, 0.012, -0.01, 0.95)
   syncPenUi()
 }
 function pickPen(e) {
@@ -758,6 +1114,257 @@ function setSitting(on, skipSave = false) {
     sfxClick()
   }
   syncViewUi()
+}
+
+/* 08b-doplnky-izby.js */
+function buildRoomExtras() {
+  const woodDark = M(0x5c4030, 0.72, 0.04)
+  const woodMid = M(0x7a5538, 0.68, 0.03)
+  const metal = M(0x2a2a30, 0.4, 0.55)
+  const fabric = M(0x3d4f45, 0.9, 0.02)
+  const leaf = M(0x2f7a48, 0.78, 0.02)
+  const leaf2 = M(0x1f5c36, 0.82, 0.01)
+  const ceramic = M(0xd9cfc2, 0.55, 0.05)
+  const paper = M(0xe8e0d2, 0.88, 0.01)
+
+  // koberec pod stolom
+  const rugTex = ctex(256, 256, (c, w, h) => {
+    c.fillStyle = '#6b4e3a'
+    c.fillRect(0, 0, w, h)
+    c.fillStyle = '#5a4030'
+    for (let y = 8; y < h; y += 14) c.fillRect(0, y, w, 5)
+    c.strokeStyle = '#8a6a52'
+    c.lineWidth = 10
+    c.strokeRect(8, 8, w - 16, h - 16)
+  })
+  const rug = new THREE.Mesh(
+    new THREE.PlaneGeometry(2.4, 1.7),
+    new THREE.MeshStandardMaterial({ map: rugTex, roughness: 0.95 })
+  )
+  rug.rotation.x = -Math.PI / 2
+  rug.position.set(0.15, 0.004, 0.55)
+  rug.receiveShadow = true
+  scene.add(rug)
+
+  // izbová rastlina pri okne
+  const plant = new THREE.Group()
+  plant.position.set(-2.15, 0, 1.55)
+  scene.add(plant)
+  cyl(plant, 0.11, 0.18, ceramic, 0, 0.09, 0, 0.13)
+  cyl(plant, 0.09, 0.06, M(0x4a3424, 0.9), 0, 0.2, 0)
+  const stem = cyl(plant, 0.012, 0.55, M(0x3a5a2a, 0.7), 0, 0.5, 0)
+  for (let i = 0; i < 7; i++) {
+    const ang = (i / 7) * Math.PI * 2
+    const fr = new THREE.Mesh(new THREE.SphereGeometry(0.12, 10, 8), i % 2 ? leaf : leaf2)
+    fr.scale.set(1.4, 0.55, 0.9)
+    fr.position.set(Math.cos(ang) * 0.14, 0.72 + (i % 3) * 0.08, Math.sin(ang) * 0.14)
+    fr.castShadow = true
+    plant.add(fr)
+  }
+  const top = new THREE.Mesh(new THREE.SphereGeometry(0.16, 12, 10), leaf)
+  top.position.set(0, 0.92, 0)
+  top.scale.set(1.1, 0.7, 1.1)
+  top.castShadow = true
+  plant.add(top)
+  stem.castShadow = true
+
+  // menšia rastlina na parapete
+  const sill = new THREE.Group()
+  sill.position.set(-2.42, 0.72, 0.15)
+  scene.add(sill)
+  cyl(sill, 0.055, 0.08, M(0xb85c38, 0.55), 0, 0.04, 0, 0.06)
+  for (let i = 0; i < 5; i++) {
+    const blade = box(sill, 0.012, 0.22, 0.004, leaf2, (i - 2) * 0.02, 0.16, 0)
+    blade.rotation.z = (i - 2) * 0.18
+    blade.rotation.x = 0.15
+  }
+
+  // knižnica pri pravej stene
+  const shelf = new THREE.Group()
+  shelf.position.set(3.45, 0, 1.4)
+  shelf.rotation.y = -Math.PI / 2
+  scene.add(shelf)
+  box(shelf, 0.9, 0.04, 0.32, woodDark, 0, 0.04, 0)
+  box(shelf, 0.9, 0.04, 0.32, woodDark, 0, 0.72, 0)
+  box(shelf, 0.9, 0.04, 0.32, woodDark, 0, 1.4, 0)
+  box(shelf, 0.9, 0.04, 0.32, woodDark, 0, 2.05, 0)
+  box(shelf, 0.04, 2.05, 0.32, woodDark, -0.43, 1.025, 0)
+  box(shelf, 0.04, 2.05, 0.32, woodDark, 0.43, 1.025, 0)
+  box(shelf, 0.9, 2.05, 0.03, woodMid, 0, 1.025, -0.15)
+  const bookCols = [0x2c4a6e, 0x6b2e2e, 0x2e5a3a, 0x5a3d6b, 0xc4a35a, 0x1f1f24, 0x3a6f8a, 0x8a4a2a]
+  for (let row = 0; row < 3; row++) {
+    let x = -0.34
+    for (let i = 0; i < 8; i++) {
+      const w = 0.05 + (i % 3) * 0.012
+      const h = 0.22 + (i % 4) * 0.03
+      const d = 0.18 + (i % 2) * 0.04
+      const b = box(shelf, w, h, d, M(bookCols[(row * 3 + i) % bookCols.length], 0.7), x + w / 2, 0.08 + row * 0.68 + h / 2, 0.02)
+      b.rotation.z = ((i % 5) - 2) * 0.01
+      x += w + 0.008
+    }
+  }
+  // dekor na hornej polici
+  cyl(shelf, 0.05, 0.12, ceramic, -0.22, 2.12, 0.02)
+  box(shelf, 0.14, 0.02, 0.1, M(0x222228, 0.5), 0.2, 2.08, 0.02)
+  box(shelf, 0.12, 0.08, 0.02, M(0xe8e4dc, 0.6), 0.2, 2.13, 0.06)
+
+  // stojacia lampa v rohu
+  const lamp = new THREE.Group()
+  lamp.position.set(3.2, 0, 3.6)
+  scene.add(lamp)
+  cyl(lamp, 0.12, 0.03, metal, 0, 0.015, 0)
+  cyl(lamp, 0.018, 1.55, metal, 0, 0.8, 0)
+  const shade = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.18, 0.26, 0.28, 20, 1, true),
+    new THREE.MeshStandardMaterial({ color: 0xf2e6c9, roughness: 0.85, side: THREE.DoubleSide })
+  )
+  shade.position.y = 1.7
+  shade.castShadow = true
+  lamp.add(shade)
+  const bulb = new THREE.PointLight(0xffd9a8, 0.35, 4.5, 2)
+  bulb.position.set(0, 1.55, 0)
+  lamp.add(bulb)
+
+  // bočný stolík + kniha + slúchadlá
+  const side = new THREE.Group()
+  side.position.set(1.55, 0, 1.35)
+  scene.add(side)
+  cyl(side, 0.22, 0.04, woodMid, 0, 0.48, 0)
+  cyl(side, 0.03, 0.48, woodDark, 0, 0.24, 0)
+  cyl(side, 0.16, 0.03, woodDark, 0, 0.02, 0)
+  box(side, 0.14, 0.02, 0.1, M(0x3a5080, 0.65), 0.02, 0.51, 0.02)
+  box(side, 0.12, 0.018, 0.09, M(0x804030, 0.65), -0.02, 0.53, -0.02)
+  // slúchadlá
+  const hp = new THREE.Group()
+  hp.position.set(-0.08, 0.56, 0.05)
+  hp.rotation.y = 0.4
+  side.add(hp)
+  const band = new THREE.Mesh(
+    new THREE.TorusGeometry(0.07, 0.008, 8, 20, Math.PI),
+    metal
+  )
+  band.rotation.z = Math.PI / 2
+  band.position.y = 0.02
+  hp.add(band)
+  for (const sx of [-1, 1]) {
+    const cup = cyl(hp, 0.035, 0.04, M(0x1a1a1e, 0.45, 0.2), sx * 0.07, -0.02, 0)
+    cup.rotation.z = Math.PI / 2
+  }
+
+  // batoh pri stoličke
+  const bag = new THREE.Group()
+  bag.position.set(0.55, 0, 1.35)
+  bag.rotation.y = -0.5
+  scene.add(bag)
+  box(bag, 0.28, 0.38, 0.16, fabric, 0, 0.22, 0)
+  box(bag, 0.22, 0.12, 0.04, M(0x2a3830, 0.85), 0, 0.32, 0.1)
+  box(bag, 0.04, 0.28, 0.02, metal, -0.1, 0.35, -0.02)
+  box(bag, 0.04, 0.28, 0.02, metal, 0.1, 0.35, -0.02)
+
+  // topánky
+  const shoeMat = M(0x1c1c22, 0.55, 0.08)
+  for (const [sx, syaw] of [
+    [-0.35, 0.2],
+    [-0.22, -0.15],
+  ]) {
+    const sh = box(scene, 0.1, 0.06, 0.26, shoeMat, sx, 0.03, 1.55)
+    sh.rotation.y = syaw
+  }
+
+  // plagát na pravej stene
+  const poster = ctex(256, 384, (c, w, h) => {
+    const g = c.createLinearGradient(0, 0, 0, h)
+    g.addColorStop(0, '#1a2a3a')
+    g.addColorStop(1, '#3a6a5a')
+    c.fillStyle = g
+    c.fillRect(0, 0, w, h)
+    c.fillStyle = '#e8dcc8'
+    c.font = 'bold 36px Georgia, serif'
+    c.fillText('APERTURE', 28, 160)
+    c.font = '22px Georgia, serif'
+    c.fillText('& air', 90, 200)
+    c.strokeStyle = '#c9a86a'
+    c.lineWidth = 4
+    c.strokeRect(16, 16, w - 32, h - 32)
+  })
+  const posterM = new THREE.Mesh(
+    new THREE.PlaneGeometry(0.55, 0.82),
+    new THREE.MeshStandardMaterial({ map: poster, roughness: 0.7 })
+  )
+  posterM.position.set(3.76, 1.7, 2.6)
+  posterM.rotation.y = -Math.PI / 2
+  scene.add(posterM)
+  box(scene, 0.02, 0.86, 0.59, woodDark, 3.77, 1.7, 2.6)
+
+  // kalendár na zadnej stene
+  const cal = ctex(256, 280, (c, w, h) => {
+    c.fillStyle = '#f4f0e8'
+    c.fillRect(0, 0, w, h)
+    c.fillStyle = '#c45c3a'
+    c.fillRect(0, 0, w, 48)
+    c.fillStyle = '#fff'
+    c.font = 'bold 28px sans-serif'
+    c.fillText('NOV', 95, 34)
+    c.fillStyle = '#333'
+    c.font = 'bold 72px sans-serif'
+    c.fillText('22', 85, 150)
+    c.font = '18px sans-serif'
+    c.fillText('nedeľa', 95, 190)
+    c.strokeStyle = '#ddd'
+    for (let i = 0; i < 5; i++) c.strokeRect(30 + (i % 5) * 40, 210, 32, 32)
+  })
+  const calM = new THREE.Mesh(
+    new THREE.PlaneGeometry(0.28, 0.32),
+    new THREE.MeshStandardMaterial({ map: cal, roughness: 0.85 })
+  )
+  calM.position.set(2.35, 1.85, -0.58)
+  scene.add(calM)
+
+  // reproduktor / bluetooth box na stole-rohu
+  const spk = new THREE.Group()
+  spk.position.set(-1.15, DESK_TOP, -0.15)
+  scene.add(spk)
+  box(spk, 0.12, 0.16, 0.1, M(0x1a1a1c, 0.45, 0.15), 0, 0.08, 0)
+  cyl(spk, 0.035, 0.01, M(0x333338, 0.4), 0, 0.1, 0.052).rotation.x = Math.PI / 2
+  const led = new THREE.Mesh(
+    new THREE.SphereGeometry(0.006, 8, 8),
+    new THREE.MeshBasicMaterial({ color: 0x44ffaa })
+  )
+  led.position.set(0.04, 0.14, 0.052)
+  spk.add(led)
+
+  // záclona pri okne (ľahká látka)
+  const curtain = new THREE.Mesh(
+    new THREE.PlaneGeometry(0.55, 2.05),
+    new THREE.MeshStandardMaterial({
+      color: 0xe8dcc8,
+      roughness: 0.9,
+      transparent: true,
+      opacity: 0.85,
+      side: THREE.DoubleSide,
+    })
+  )
+  curtain.position.set(-2.52, 1.55, 1.95)
+  curtain.rotation.y = Math.PI / 2
+  scene.add(curtain)
+  box(scene, 0.02, 0.02, 0.6, metal, -2.52, 2.58, 1.95)
+
+  // kartónová krabica / sklad pod poličkou
+  const boxG = new THREE.Group()
+  boxG.position.set(3.2, 0, 0.55)
+  boxG.rotation.y = 0.2
+  scene.add(boxG)
+  box(boxG, 0.35, 0.28, 0.28, M(0xc4a574, 0.85), 0, 0.14, 0)
+  box(boxG, 0.36, 0.02, 0.29, M(0xb89560, 0.8), 0, 0.29, 0)
+
+  // stoh kníh na podlahe
+  const stack = new THREE.Group()
+  stack.position.set(2.7, 0, 2.1)
+  stack.rotation.y = 0.35
+  scene.add(stack)
+  ;[0x2a4060, 0x704030, 0x406050].forEach((col, i) => {
+    box(stack, 0.22, 0.035, 0.16, M(col, 0.7), 0, 0.02 + i * 0.038, 0)
+  })
 }
 
 /* 09-kos-pod-stol-zahodenie-listkov-viko.js */
@@ -977,7 +1584,8 @@ function buildTrashBin() {
   trashLidG.rotation.x = trashOpen ? TRASH_LID_OPEN : 0
   trashLidAng = trashLidG.rotation.x
 }
-const PAPER_Z = V(-0.36, DESK_TOP + 0.72, 0.08),
+// pohľad ako pri čítaní za stolom
+const PAPER_Z = V(-0.36, DESK_TOP + 0.42, 0.48),
   PAPER_T = V(-0.36, DESK_TOP + 0.01, 0.2)
 function openPaperRead() {
   if (sitting) setSitting(false, true)
@@ -1091,24 +1699,7 @@ function weatherDoor() {
 }
 function updateWindowWeather(dt) {
   const door = weatherDoor()
-  if (snow) {
-    snow.visible = door > 0.18 && snowOn && S.i !== 5
-    snow.material.opacity = 0.65 + 0.35 * door
-    if (snow.visible) {
-      const p = snow.geometry.attributes.position.array,
-        v = snowPack.vel
-      for (let i = 0; i < snowPack.N; i++) {
-        p[i * 3] += v[i * 3] * dt * 60
-        p[i * 3 + 1] += v[i * 3 + 1] * dt * 60
-        p[i * 3 + 2] += v[i * 3 + 2] * dt * 60
-        if (p[i * 3 + 1] < WX_Y0 || p[i * 3] > -WX_X0) {
-          randWxSlot(i, p)
-          p[i * 3 + 1] = WX_Y1 + Math.random() * 0.3
-        }
-      }
-      snow.geometry.attributes.position.needsUpdate = true
-    }
-  }
+  if (snow) snow.visible = false
   if (rain) {
     rain.visible = door > 0.15 && S.i === 5
     rain.material.opacity = 0.35 + 0.5 * door
@@ -1283,15 +1874,47 @@ function applyMacLid(dt) {
     cursor.visible = PWR.mac && laptopScr?.visible && Math.floor(performance.now() / 500) % 2 === 0
 }
 function buildScreens(rtTex, hudTex) {
-  const black = M(0x0c0c0e, 0.4)
-  // BIG AOC centre monitor on riser
+  const black = M(0x0c0c0e, 0.38, 0.15)
+  const plastic = M(0x141416, 0.48, 0.08)
+  const aocAccent = M(0x2aa59a, 0.35, 0.2)
+  const silver = M(0xa8abb0, 0.32, 0.72)
+
+  // ——— AOC centre (riser) ———
   const g = new THREE.Group()
   g.position.set(0, 0.95, -0.35)
   scene.add(g)
-  cyl(g, 0.12, 0.015, black, 0, 0.0075, 0)
-  box(g, 0.05, 0.22, 0.02, black, 0, 0.12, -0.02)
-  box(g, 0.64, 0.39, 0.02, black, 0, 0.43, 0)
-  box(g, 0.65, 0.004, 0.02, M(0x2aa59a, 0.3), 0, 0.2275, 0)
+  // stand: oval base + tapered neck + hinge
+  const base = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.125, 0.014, 28), plastic)
+  base.position.y = 0.007
+  base.castShadow = base.receiveShadow = true
+  g.add(base)
+  const footRing = new THREE.Mesh(
+    new THREE.TorusGeometry(0.1, 0.004, 8, 28),
+    M(0x1a1a1c, 0.5, 0.2)
+  )
+  footRing.rotation.x = Math.PI / 2
+  footRing.position.y = 0.002
+  g.add(footRing)
+  const neck = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.024, 0.28, 12), plastic)
+  neck.position.set(0, 0.16, -0.025)
+  neck.castShadow = true
+  g.add(neck)
+  const hinge = box(g, 0.08, 0.028, 0.036, plastic, 0, 0.3, -0.01)
+  hinge.rotation.x = 0.15
+  // panel chassis
+  const panelY = 0.43
+  box(g, 0.66, 0.4, 0.018, black, 0, panelY, -0.004)
+  box(g, 0.64, 0.02, 0.02, plastic, 0, panelY - 0.195, 0) // chin
+  box(g, 0.08, 0.005, 0.004, aocAccent, 0, panelY - 0.195, 0.011)
+  // thin bezels (frame around glass)
+  box(g, 0.655, 0.008, 0.01, black, 0, panelY + 0.188, 0.006)
+  box(g, 0.008, 0.372, 0.01, black, -0.324, panelY, 0.006)
+  box(g, 0.008, 0.372, 0.01, black, 0.324, panelY, 0.006)
+  // back vent / ports plate
+  box(g, 0.22, 0.08, 0.006, M(0x1c1c20, 0.55), 0, panelY - 0.05, -0.014)
+  for (const dx of [-0.04, 0, 0.04])
+    box(g, 0.012, 0.008, 0.004, M(0x2a2a30, 0.4, 0.3), dx, panelY - 0.05, -0.017)
+
   sbCanvas = document.createElement('canvas')
   sbCanvas.width = 256
   sbCanvas.height = 640
@@ -1299,7 +1922,7 @@ function buildScreens(rtTex, hudTex) {
   sbTex.colorSpace = THREE.SRGBColorSpace
   paintSidebar(activeTab)
   const sb = new THREE.Mesh(new THREE.PlaneGeometry(0.14, 0.35), screenMat(sbTex))
-  sb.position.set(-0.22, 0.43, 0.0115)
+  sb.position.set(-0.22, panelY, 0.008)
   g.add(sb)
   sbPlane = sb
   tabHL = new THREE.Mesh(
@@ -1311,9 +1934,8 @@ function buildScreens(rtTex, hudTex) {
       toneMapped: false,
     })
   )
-  tabHL.position.set(-0.22, 0.43, 0.0118)
+  tabHL.position.set(-0.22, panelY, 0.0085)
   g.add(tabHL)
-  // nested scene render-to-texture
   const ns = new THREE.Mesh(
     new THREE.PlaneGeometry(0.44, 0.35),
     new THREE.ShaderMaterial({
@@ -1324,17 +1946,17 @@ function buildScreens(rtTex, hudTex) {
         'uniform sampler2D t;varying vec2 v;void main(){vec3 c=texture2D(t,v).rgb;c=c/(1.+c*.25);gl_FragColor=vec4(pow(c,vec3(.4545)),1.);}',
     })
   )
-  ns.position.set(0.07, 0.43, 0.0115)
+  ns.position.set(0.07, panelY, 0.008)
   g.add(ns)
   nestedPlane = ns
   hudPlane = new THREE.Mesh(
     new THREE.PlaneGeometry(0.44, 0.35),
     new THREE.MeshBasicMaterial({ map: hudTex, transparent: true, toneMapped: false })
   )
-  hudPlane.position.set(0.07, 0.43, 0.012)
+  hudPlane.position.set(0.07, panelY, 0.0085)
   g.add(hudPlane)
   extG = new THREE.Group()
-  extG.position.set(0.07, 0.43, 0.0125)
+  extG.position.set(0.07, panelY, 0.009)
   g.add(extG)
   extPlane = new THREE.Mesh(
     new THREE.PlaneGeometry(0.44, 0.35),
@@ -1343,25 +1965,57 @@ function buildScreens(rtTex, hudTex) {
   extPlane.visible = false
   extG.add(extPlane)
   aocBlank = new THREE.Mesh(
-    new THREE.PlaneGeometry(0.64, 0.39),
+    new THREE.PlaneGeometry(0.64, 0.385),
     new THREE.MeshBasicMaterial({ color: 0x040404, toneMapped: false })
   )
-  aocBlank.position.set(0, 0.43, 0.013)
+  aocBlank.position.set(0, panelY, 0.0095)
   aocBlank.visible = false
   g.add(aocBlank)
+  // subtle glass sheen
+  const glass = new THREE.Mesh(
+    new THREE.PlaneGeometry(0.63, 0.375),
+    new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      metalness: 0.9,
+      roughness: 0.08,
+      transparent: true,
+      opacity: 0.06,
+    })
+  )
+  glass.position.set(0, panelY, 0.01)
+  g.add(glass)
   bigScreen = g
 
-  // LEFT Dell monitor with GitHub page
+  // ——— Dell left ———
   const d = new THREE.Group()
   d.position.set(-1.05, 0.765, -0.15)
   d.rotation.y = 0.4
   scene.add(d)
-  box(d, 0.3, 0.012, 0.2, M(0x9a9da2, 0.3, 0.7), 0, 0.006, 0)
-  box(d, 0.06, 0.22, 0.03, M(0x9a9da2, 0.3, 0.7), 0, 0.12, -0.03)
-  const dm = box(d, 0.52, 0.32, 0.02, black, 0, 0.34, 0)
-  dm.rotation.x = -0.08
+  // silver stand
+  const dBase = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.012, 0.18), silver)
+  dBase.position.set(0, 0.006, 0.01)
+  dBase.castShadow = dBase.receiveShadow = true
+  d.add(dBase)
+  box(d, 0.05, 0.01, 0.14, M(0x7a7d82, 0.35, 0.65), 0, 0.008, -0.02)
+  const dNeck = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.26, 0.028), silver)
+  dNeck.position.set(0, 0.14, -0.04)
+  dNeck.castShadow = true
+  d.add(dNeck)
+  box(d, 0.07, 0.03, 0.04, silver, 0, 0.27, -0.015)
+  // panel tilted
+  const panel = new THREE.Group()
+  panel.position.set(0, 0.34, 0)
+  panel.rotation.x = -0.1
+  d.add(panel)
+  box(panel, 0.54, 0.34, 0.016, black, 0, 0, -0.002)
+  box(panel, 0.54, 0.018, 0.018, plastic, 0, -0.162, 0.002)
+  box(panel, 0.05, 0.004, 0.003, silver, 0, -0.162, 0.012)
+  // side bezels
+  box(panel, 0.008, 0.3, 0.008, black, -0.266, 0.01, 0.006)
+  box(panel, 0.008, 0.3, 0.008, black, 0.266, 0.01, 0.006)
+  box(panel, 0.52, 0.008, 0.008, black, 0, 0.162, 0.006)
   const gh = new THREE.Mesh(
-    new THREE.PlaneGeometry(0.5, 0.3),
+    new THREE.PlaneGeometry(0.51, 0.305),
     screenMat(
       ctex(1024, 614, (c, w, h) => {
         c.fillStyle = '#0d1117'
@@ -1420,21 +2074,32 @@ function buildScreens(rtTex, hudTex) {
       })
     )
   )
-  gh.position.set(0, 0.34, 0.0115)
-  gh.rotation.x = -0.08
-  d.add(gh)
+  gh.position.set(0, 0.01, 0.009)
+  panel.add(gh)
   dellScreen = gh
   dellG = d
   dellBlank = new THREE.Mesh(
-    new THREE.PlaneGeometry(0.5, 0.3),
+    new THREE.PlaneGeometry(0.51, 0.305),
     new THREE.MeshBasicMaterial({ color: 0x040404, toneMapped: false })
   )
-  dellBlank.position.set(0, 0.34, 0.0116)
-  dellBlank.rotation.x = -0.08
+  dellBlank.position.set(0, 0.01, 0.0095)
   dellBlank.visible = false
-  d.add(dellBlank)
+  panel.add(dellBlank)
+  const dGlass = new THREE.Mesh(
+    new THREE.PlaneGeometry(0.505, 0.3),
+    new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      metalness: 0.85,
+      roughness: 0.1,
+      transparent: true,
+      opacity: 0.05,
+    })
+  )
+  dGlass.position.set(0, 0.01, 0.01)
+  panel.add(dGlass)
+
   ghBig = new THREE.Group()
-  ghBig.position.set(0.07, 0.43, 0.0125)
+  ghBig.position.set(0.07, 0.43, 0.0095)
   bigScreen.add(ghBig)
   ghBig.add(
     new THREE.Mesh(
@@ -1454,39 +2119,98 @@ let cursor
 function buildLaptop() {
   const L = new THREE.Group()
   L.position.set(0, 0.765, 0.45)
-  L.rotation.y = 0
   scene.add(L)
   laptopG = L
-  const al = M(0x8c8f94, 0.3, 0.8)
-  box(L, 0.36, 0.012, 0.24, al, 0, 0.006, 0)
+  const al = M(0x9a9da3, 0.28, 0.82)
+  const alDark = M(0x6e7176, 0.35, 0.7)
+  const blackIn = M(0x1a1a1e, 0.55, 0.1)
+
+  // wedge base (thicker at back)
+  const baseGeo = new THREE.BoxGeometry(0.38, 0.014, 0.26)
+  const base = new THREE.Mesh(baseGeo, al)
+  base.position.set(0, 0.007, 0)
+  base.castShadow = base.receiveShadow = true
+  L.add(base)
+  // underside feet
+  for (const [fx, fz] of [
+    [-0.15, -0.1],
+    [0.15, -0.1],
+    [-0.15, 0.1],
+    [0.15, 0.1],
+  ])
+    box(L, 0.02, 0.003, 0.02, M(0x2a2a2e, 0.7), fx, 0.0015, fz)
+  // palm rest + speaker grills
+  box(L, 0.36, 0.002, 0.08, alDark, 0, 0.0145, 0.07)
+  for (const sx of [-0.15, 0.15]) {
+    for (let i = 0; i < 8; i++)
+      box(L, 0.002, 0.001, 0.012, M(0x333338, 0.5), sx + (i - 3.5) * 0.006, 0.015, 0.095)
+  }
+  // keyboard deck
   const kb = new THREE.Mesh(
-    new THREE.PlaneGeometry(0.31, 0.11),
+    new THREE.PlaneGeometry(0.33, 0.115),
     new THREE.MeshBasicMaterial({
-      map: ctex(512, 180, (c, w, h) => {
-        c.fillStyle = '#0d0d10'
+      map: ctex(640, 220, (c, w, h) => {
+        c.fillStyle = '#121214'
         c.fillRect(0, 0, w, h)
-        for (let r = 0; r < 5; r++)
-          for (let k = 0; k < 14; k++) {
-            c.fillStyle = '#24242a'
-            c.fillRect(6 + k * 36, 8 + r * 33, 32, 28)
-            c.fillStyle = 'rgba(120,170,255,.28)'
-            c.fillRect(8 + k * 36, 10 + r * 33, 28, 2)
+        const rows = [
+          { n: 14, y: 8, gap: 2 },
+          { n: 14, y: 48, gap: 2 },
+          { n: 13, y: 88, gap: 2 },
+          { n: 12, y: 128, gap: 2 },
+          { n: 10, y: 168, gap: 2 },
+        ]
+        rows.forEach((row, ri) => {
+          const kw = (w - 16 - (row.n - 1) * row.gap) / row.n
+          for (let k = 0; k < row.n; k++) {
+            const x = 8 + k * (kw + row.gap)
+            const kh = ri === 4 && k === 4 ? kw * 2.2 : 32
+            const xx = ri === 4 && k > 4 ? x + kw * 1.2 : x
+            if (ri === 4 && k === 5) continue
+            c.fillStyle = '#2a2a30'
+            c.fillRect(xx, row.y, kw, kh)
+            c.fillStyle = 'rgba(140,180,255,.22)'
+            c.fillRect(xx + 2, row.y + 2, kw - 4, 2)
           }
+        })
       }),
+      toneMapped: false,
     })
   )
   kb.rotation.x = -Math.PI / 2
-  kb.position.set(0, 0.0135, -0.01)
+  kb.position.set(0, 0.015, -0.02)
   L.add(kb)
-  box(L, 0.1, 0.002, 0.06, M(0x6a6d72, 0.3, 0.6), 0, 0.013, 0.088)
+  // glass trackpad
+  const tp = new THREE.Mesh(
+    new THREE.BoxGeometry(0.11, 0.0025, 0.07),
+    new THREE.MeshStandardMaterial({ color: 0x5a5d62, metalness: 0.55, roughness: 0.25 })
+  )
+  tp.position.set(0, 0.0155, 0.085)
+  L.add(tp)
+  // side ports (USB-C)
+  for (const z of [-0.04, 0.02]) {
+    box(L, 0.004, 0.005, 0.01, blackIn, -0.191, 0.008, z)
+    box(L, 0.004, 0.005, 0.01, blackIn, 0.191, 0.008, z)
+  }
+  // hinge barrel
+  const hingeBar = new THREE.Mesh(new THREE.CylinderGeometry(0.006, 0.006, 0.36, 12), alDark)
+  hingeBar.rotation.z = Math.PI / 2
+  hingeBar.position.set(0, 0.014, -0.128)
+  L.add(hingeBar)
+
   const lid = new THREE.Group()
-  lid.position.set(0, 0.012, -0.12)
+  lid.position.set(0, 0.014, -0.128)
   lid.rotation.x = -0.35
   L.add(lid)
   laptopLid = lid
-  box(lid, 0.36, 0.24, 0.008, al, 0, 0.12, 0)
+  // lid shell + thin edge
+  box(lid, 0.38, 0.25, 0.007, al, 0, 0.125, -0.002)
+  box(lid, 0.372, 0.242, 0.002, blackIn, 0, 0.125, 0.0025)
+  // camera notch
+  box(lid, 0.012, 0.006, 0.002, M(0x111114, 0.4), 0, 0.24, 0.004)
+  cyl(lid, 0.0022, 0.001, M(0x222228, 0.3), 0, 0.24, 0.005).rotation.x = Math.PI / 2
+
   const sc = new THREE.Mesh(
-    new THREE.PlaneGeometry(0.34, 0.22),
+    new THREE.PlaneGeometry(0.355, 0.225),
     screenMat(
       ctex(1024, 660, (c, w, h) => {
         c.fillStyle = '#181818'
@@ -1561,10 +2285,23 @@ function buildLaptop() {
       })
     )
   )
-  sc.position.set(0, 0.12, 0.0045)
+  sc.position.set(0, 0.125, 0.0048)
   lid.add(sc)
   laptopScr = sc
-  cursor = box(lid, 0.006, 0.012, 0.001, M(0xffffff, 1), 0.0, 0.05, 0.005)
+  // screen glass
+  const lg = new THREE.Mesh(
+    new THREE.PlaneGeometry(0.355, 0.225),
+    new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      metalness: 0.9,
+      roughness: 0.08,
+      transparent: true,
+      opacity: 0.05,
+    })
+  )
+  lg.position.set(0, 0.125, 0.0055)
+  lid.add(lg)
+  cursor = box(lid, 0.006, 0.012, 0.001, M(0xffffff, 1), 0.0, 0.06, 0.0055)
   cursor.material = new THREE.MeshBasicMaterial({ color: 0xffffff })
 }
 
@@ -1675,12 +2412,25 @@ function buildMugs() {
   pen.rotation.z = Math.PI / 2
   pen.rotation.y = 0.35
   box(scene, 0.04, 0.002, 0.004, M(0xcccccc, 0.2, 0.9), -0.48, 0.784, 0.13).rotation.y = 0.35
-  // magic-mouse style
-  const m = new THREE.Mesh(new THREE.SphereGeometry(0.05, 24, 12), M(0xfafafa, 0.15))
-  m.scale.set(0.75, 0.28, 1.5)
-  m.position.set(1.1, 0.785, 0.38)
-  m.castShadow = true
-  scene.add(m)
+  // Magic Mouse – hladké telo + spodok
+  const mouse = new THREE.Group()
+  mouse.position.set(1.1, DESK_TOP + 0.012, 0.38)
+  scene.add(mouse)
+  const mBody = new THREE.Mesh(
+    new THREE.SphereGeometry(0.048, 28, 16),
+    new THREE.MeshStandardMaterial({ color: 0xf4f4f6, roughness: 0.22, metalness: 0.05 })
+  )
+  mBody.scale.set(0.72, 0.26, 1.45)
+  mBody.castShadow = mBody.receiveShadow = true
+  mouse.add(mBody)
+  const mBottom = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.028, 0.03, 0.004, 20),
+    M(0xe8e8ea, 0.45)
+  )
+  mBottom.position.y = -0.006
+  mouse.add(mBottom)
+  // jemná deliaca linka (L/R)
+  box(mouse, 0.0015, 0.001, 0.06, M(0xd0d0d4, 0.4), 0, 0.01, 0)
 }
 function vessel(x, z, y0, ro, rt, h, tex, liq = 0x3b2314) {
   const V2 = (a) => a.map((p) => new THREE.Vector2(p[0], p[1]))
@@ -1769,34 +2519,33 @@ function buildRoomWind() {
 }
 function updateRoomWind(dt, t) {
   if (!roomWind || !roomWindPack) return
-  const open = Math.max(0, S.open)
+  // vietor len pri otvorenom okne (prepínač / S.openT)
+  const open = Math.max(0, Math.min(1, S.open))
+  const wantWind = S.openT > 0.5 && open > 0.12
+  if (!wantWind) {
+    roomWindGust = 0
+    roomWind.visible = false
+    roomWind.material.opacity = 0
+    roomWind.geometry.setDrawRange(0, 0)
+    if (paperMesh && zoom !== 'paper') {
+      paperMesh.rotation.z = paperBaseZ
+      paperMesh.position.y = 0.011
+    }
+    if (steam) {
+      steam.position.x = 0.65
+      if (steam2) steam2.position.x = -0.6
+    }
+    return
+  }
   const gustTarget =
     open * (0.55 + 0.45 * (0.5 + 0.5 * Math.sin(t * 0.7) + 0.25 * Math.sin(t * 1.9 + 1.2)))
-  roomWindGust += (gustTarget - roomWindGust) * (1 - 0.08 ** dt)
+  roomWindGust += (gustTarget - roomWindGust) * (1 - 0.02 ** dt)
   const strength = roomWindGust
-  roomWind.visible = strength > 0.04
-  roomWind.material.opacity = Math.min(0.55, strength * 0.72)
-  roomWind.geometry.setDrawRange(0, Math.floor(roomWindPack.N * (0.15 + open * 0.85)))
-  if (strength < 0.02) return
-  const p = roomWindPack.pos,
-    v = roomWindPack.vel,
-    N = roomWindPack.N,
-    step = dt * 60
-  for (let i = 0; i < N; i++) {
-    const wob = Math.sin(t * 2.4 + i * 0.37) * 0.015
-    p[i * 3] += v[i * 3] * strength * step
-    p[i * 3 + 1] += v[i * 3 + 1] * strength * step + wob * dt
-    p[i * 3 + 2] += v[i * 3 + 2] * strength * step
-    if (
-      p[i * 3] > 2.6 ||
-      p[i * 3 + 1] < 0.35 ||
-      p[i * 3 + 1] > 2.7 ||
-      p[i * 3 + 2] < -0.6 ||
-      p[i * 3 + 2] > 2.6
-    )
-      spawnRoomWindParticle(i, p, v, true)
-  }
-  roomWind.geometry.attributes.position.needsUpdate = true
+  // vzdušné guľky vypnuté — ostáva len pohyb papiera / pary
+  roomWind.visible = false
+  roomWind.material.opacity = 0
+  roomWind.geometry.setDrawRange(0, 0)
+  if (strength < 0.05) return
   if (paperMesh && zoom !== 'paper') {
     paperMesh.rotation.z =
       paperBaseZ + Math.sin(t * 6.2) * strength * 0.035 + Math.sin(t * 11) * 0.008 * strength
@@ -1874,6 +2623,35 @@ function buildWallDecor() {
     box(g, 0.03, len, 0.004, M(rib, 0.7), 0, -len / 2, 0)
     cyl(g, 0.045, 0.008, M(col, 0.3, 0.9), 0, -len - 0.04, 0).rotation.x = Math.PI / 2
     medals.push(g)
+    g.userData.medalPhase = i * 1.7
+    g.userData.medalLen = len
+  })
+}
+function updateMedalsWind(t) {
+  const open = Math.max(0, Math.min(1, S.open))
+  const want = S.openT > 0.5 && open > 0.15
+  // vietor od okna (ľavá stena) → silnejšie kývanie do strán
+  const gust =
+    want
+      ? open *
+        (0.55 +
+          0.45 * (0.5 + 0.5 * Math.sin(t * 0.85) + 0.3 * Math.sin(t * 2.1 + 0.4)))
+      : 0.08
+  const ampZ = want ? 0.055 + gust * 0.22 : 0.025
+  const ampX = want ? 0.02 + gust * 0.08 : 0.008
+  const speed = want ? 2.4 + gust * 2.8 : 1.3
+  medals.forEach((m, i) => {
+    const ph = m.userData.medalPhase ?? i
+    const lenF = (m.userData.medalLen || 0.45) / 0.5
+    // prevládajúci smer od okna (+X) + nárazy
+    const blow = want ? 0.04 * open * gust : 0
+    m.rotation.z =
+      blow +
+      Math.sin(t * speed + ph) * ampZ * lenF +
+      Math.sin(t * speed * 1.7 + ph * 1.3) * ampZ * 0.35
+    m.rotation.x =
+      Math.sin(t * (speed * 0.7) + ph * 0.8) * ampX * lenF +
+      (want ? Math.sin(t * 3.2 + ph) * 0.02 * gust : 0)
   })
 }
 
@@ -1903,90 +2681,226 @@ function buildTechCorner() {
 function buildCables() {
   const root = new THREE.Group()
   scene.add(root)
-  const deskZ = -0.41 // zadná hrana – káble sem, nie do vzduchu
+  const deskZ = -0.41
+  const stripY = 0.078
 
-  // Biely USB-C: zázemie monitora → po zadnej hrane risera → po stole k MacBooku
+  // MacBook porty (svet: stred [0, DESK_TOP, 0.45], šírka ±0.19)
+  // halfW mierne von, aby zástrčky nepretínali šasi
+  const MB = { x: 0, z: 0.45, halfW: 0.205, y: DESK_TOP + 0.01 }
+  const mbLeft = (dz) => [-MB.halfW, MB.y, MB.z + dz]
+  const mbRight = (dz) => [MB.halfW, MB.y, MB.z + dz]
+  // prístup pozdĺž boku (bez CatmullRom pretnutia cez klávesnicu)
+  const approachLeft = (dz) => [
+    [-0.34, DESK_TOP + 0.004, MB.z + dz - 0.06],
+    [-0.28, DESK_TOP + 0.006, MB.z + dz - 0.02],
+    [-0.24, DESK_TOP + 0.008, MB.z + dz],
+    mbLeft(dz),
+  ]
+
+  // USB-C video: AOC → riser → po stole → ĽAVÝ bok MacBooku
   const usb = layCable(
     [
-      [0.07, RISER_TOP - 0.012, -0.355],
-      [0.12, RISER_TOP - 0.008, -0.355],
-      [0.22, RISER_TOP - 0.018, -0.348],
-      [0.3, DESK_TOP + 0.002, -0.36],
-      onDesk(0.28, -0.28),
-      onDesk(0.18, -0.08),
-      onDesk(0.1, 0.12),
-      onDesk(0.02, 0.3),
-      [0.04, DESK_TOP + 0.011, 0.38],
+      [0.1, RISER_TOP - 0.008, -0.36],
+      [0.16, RISER_TOP - 0.004, -0.35],
+      [0.26, RISER_TOP - 0.018, -0.34],
+      [0.34, DESK_TOP + 0.004, -0.35],
+      onDesk(0.2, -0.18),
+      onDesk(-0.05, 0.0),
+      onDesk(-0.22, 0.2),
+      ...approachLeft(-0.05),
     ],
-    cableMats.white,
+    cableMats.braid,
     root,
-    0.0021
+    0.0032,
+    { sag: 0.7, tension: 0.2, protectEnds: 3 }
   )
-  usbPlug(root, usb.end0)
-  usbPlug(root, usb.end1, true)
+  usbPlug(root, usb.end0, false, null, usb.tan0)
+  {
+    const g = usbPlug(root, usb.end1, true, null, null)
+    orientAlong(g, new THREE.Vector3(MB.x, MB.y, MB.z - 0.05), usb.end1)
+  }
+  ferrite(root, usb.curve.getPoint(0.22), null, usb.curve.getTangent(0.22))
+  cableClip(root, -0.05, 0.0, 0.15)
+  cableTie(root, usb.curve.getPoint(0.5), usb.curve.getTangent(0.5))
 
-  // Čierny kábel myši: východ z ľavého boku laptopu po podložke
+  // Kábel myši: z PRAVÉHO boku laptopu cez podložku
   layCable(
     [
-      onDesk(0.14, 0.1),
-      onDesk(0.38, 0.12),
-      onDesk(0.62, 0.16),
-      onDesk(0.86, 0.22),
-      onDesk(1.02, 0.34),
+      mbRight(0.04),
+      [0.26, DESK_TOP + 0.006, 0.48],
+      [0.32, DESK_TOP + 0.005, 0.4],
+      onDesk(0.5, 0.28),
+      onDesk(0.78, 0.22),
+      onDesk(1.0, 0.32),
+      [1.1, DESK_TOP + 0.011, 0.38],
     ],
     cableMats.black,
     root,
-    0.0019
+    0.0022,
+    { sag: 0.6, tension: 0.2, protectEnds: 2 }
   )
+  cableClip(root, 0.78, 0.22, -0.2)
 
-  // Napájanie monitora: zo stripu po zadnom okraji stola, hore po nohe risera
-  layCable(
+  // Napájanie AOC: IEC zo stripu → zadný okraj → DC do risera
+  cableCoil(root, 1.58, 0.05, -0.28, 2.2, 0.04, 0.0032, cableMats.pvc)
+  const aocPwr = layCable(
     [
-      [1.66, 0.075, -0.37],
-      [1.52, 0.085, -0.4],
-      [1.22, 0.1, -0.42],
-      onDesk(0.92, deskZ),
+      [1.66, stripY, -0.36],
+      [1.52, 0.1, -0.42],
+      [1.2, 0.12, -0.44],
+      onDesk(0.9, deskZ - 0.01),
       onDesk(0.55, deskZ),
-      onDesk(0.22, deskZ),
-      onDesk(0.06, deskZ),
-      [0.05, DESK_TOP + 0.14, -0.345],
-      [0.06, RISER_TOP - 0.025, -0.342],
+      onDesk(0.22, deskZ + 0.01),
+      onDesk(0.08, deskZ + 0.03),
+      [0.05, DESK_TOP + 0.14, -0.36],
+      [0.055, RISER_TOP - 0.05, -0.35],
+      [0.06, RISER_TOP - 0.02, -0.338],
     ],
     cableMats.pvc,
     root,
-    0.0026
+    0.004,
+    { sag: 1.05 }
   )
-  dcJack(root, new THREE.Vector3(1.66, 0.078, -0.37))
-  dcJack(root, new THREE.Vector3(0.06, RISER_TOP - 0.028, -0.342))
+  iecPlug(root, aocPwr.end0, aocPwr.tan0)
+  dcJack(root, aocPwr.end1, null, aocPwr.tan1)
+  ferrite(root, aocPwr.curve.getPoint(0.78), null, aocPwr.curve.getTangent(0.78))
+  cableClip(root, 0.55, deskZ, 0.05)
+  cableTie(root, aocPwr.curve.getPoint(0.4), aocPwr.curve.getTangent(0.4))
 
-  // Druhý biely adaptér → router
-  layCable(
+  // HDMI / DP: Dell → zadný okraj → AOC
+  const hdmi = layCable(
     [
-      [1.72, 0.078, -0.3],
-      [1.68, DESK_TOP + 0.002, -0.33],
-      onDesk(1.62, -0.34),
-      onDesk(1.62, -0.36),
+      [-1.05, 0.9, -0.2],
+      [-1.02, 0.86, -0.26],
+      [-0.92, DESK_TOP + 0.006, -0.34],
+      onDesk(-0.62, deskZ + 0.05),
+      onDesk(-0.28, deskZ + 0.02),
+      onDesk(0.0, deskZ),
+      [0.04, RISER_TOP - 0.04, -0.348],
+      [0.08, RISER_TOP - 0.018, -0.34],
     ],
-    cableMats.pvc,
-    root,
-    0.0022
-  )
-
-  // Tenký čierny Dell (len po stole, bez letu)
-  layCable(
-    [onDesk(-0.92, -0.06), onDesk(-0.72, 0.02), onDesk(-0.52, 0.08)],
     cableMats.black,
     root,
-    0.0017
+    0.003,
+    { sag: 1 }
   )
+  hdmiPlug(root, hdmi.end0, hdmi.tan0)
+  hdmiPlug(root, hdmi.end1, hdmi.tan1)
+  ferrite(root, hdmi.curve.getPoint(0.35), null, hdmi.curve.getTangent(0.35))
+  cableClip(root, -0.4, deskZ + 0.03, -0.08)
 
-  // Šnúra od hrnčeka / nabíjačka – tesne pri zadnej strane risera
-  layCable(
-    [[0.02, RISER_TOP - 0.015, -0.362], onDesk(0.08, -0.3), onDesk(-0.08, -0.34)],
-    cableMats.white,
+  // Napájanie Dell
+  const dellPwr = layCable(
+    [
+      [1.7, stripY, -0.3],
+      [1.58, DESK_TOP + 0.004, -0.36],
+      onDesk(1.15, deskZ),
+      onDesk(0.35, deskZ - 0.01),
+      onDesk(-0.35, deskZ + 0.02),
+      onDesk(-0.85, -0.26),
+      [-0.98, 0.78, -0.2],
+      [-1.02, 0.86, -0.18],
+    ],
+    cableMats.pvc,
     root,
-    0.0015
+    0.0034,
+    { sag: 1.15 }
   )
+  iecPlug(root, dellPwr.end0, dellPwr.tan0)
+  dcJack(root, dellPwr.end1, null, dellPwr.tan1)
+  ferrite(root, dellPwr.curve.getPoint(0.7), null, dellPwr.curve.getTangent(0.7))
+
+  // MagSafe: strip → zadok stola → ĽAVÝ bok MacBooku (predný port)
+  const magsafe = layCable(
+    [
+      [1.72, stripY, -0.26],
+      [1.64, DESK_TOP + 0.004, -0.3],
+      onDesk(1.15, -0.28),
+      onDesk(0.4, -0.2),
+      onDesk(-0.1, 0.05),
+      onDesk(-0.25, 0.25),
+      ...approachLeft(0.06),
+    ],
+    cableMats.braid,
+    root,
+    0.003,
+    { sag: 0.65, tension: 0.2, protectEnds: 3 }
+  )
+  iecPlug(root, magsafe.end0, magsafe.tan0)
+  {
+    const g = magsafePlug(root, magsafe.end1, null)
+    orientAlong(g, new THREE.Vector3(MB.x, MB.y, MB.z + 0.06), magsafe.end1)
+  }
+  cableClip(root, 0.4, -0.2, 0.25)
+  cableTie(root, magsafe.curve.getPoint(0.4), magsafe.curve.getTangent(0.4))
+
+  // Ethernet: router → zadný okraj → ĽAVÝ bok (zadnejší port)
+  const eth = layCable(
+    [
+      [1.55, 0.8, -0.28],
+      [1.5, DESK_TOP + 0.006, -0.34],
+      onDesk(1.0, deskZ + 0.04),
+      onDesk(0.3, deskZ + 0.04),
+      onDesk(-0.15, -0.1),
+      onDesk(-0.28, 0.15),
+      ...approachLeft(-0.09),
+    ],
+    cableMats.teal,
+    root,
+    0.0028,
+    { sag: 0.6, tension: 0.2, protectEnds: 3 }
+  )
+  rj45Plug(root, eth.end0, eth.tan0)
+  {
+    const g = rj45Plug(root, eth.end1, null)
+    orientAlong(g, new THREE.Vector3(MB.x, MB.y, MB.z - 0.09), eth.end1)
+  }
+  cableClip(root, 0.3, deskZ + 0.04, 0.12)
+
+  // Lampový kábel: lampa → zadok stola → strip
+  layCable(
+    [
+      [1.35, DESK_TOP + 0.02, -0.15],
+      onDesk(1.45, -0.22),
+      onDesk(1.55, -0.32),
+      [1.62, 0.2, -0.34],
+      [1.68, stripY + 0.02, -0.28],
+    ],
+    cableMats.black,
+    root,
+    0.0024,
+    { sag: 0.9 }
+  )
+  cableClip(root, 1.45, -0.22, -0.3)
+
+  // Audio jack: ĽAVÝ bok MacBooku → reproduktor
+  const jack = layCable(
+    [
+      mbLeft(0.01),
+      [-0.25, DESK_TOP + 0.007, 0.42],
+      [-0.32, DESK_TOP + 0.005, 0.3],
+      onDesk(-0.55, 0.1),
+      onDesk(-0.95, -0.08),
+      [-1.15, DESK_TOP + 0.09, -0.15],
+    ],
+    cableMats.black,
+    root,
+    0.002,
+    { sag: 0.7, tension: 0.2, protectEnds: 2 }
+  )
+  const jackG = new THREE.Group()
+  orientByTangent(jackG, jack.end1, jack.tan1, true)
+  const jackTip = new THREE.Mesh(new THREE.CylinderGeometry(0.003, 0.0022, 0.018, 10), chromePlug())
+  jackTip.rotation.z = Math.PI / 2
+  const jackBoot = new THREE.Mesh(new THREE.CylinderGeometry(0.0035, 0.0028, 0.01, 10), cableMats.black)
+  jackBoot.rotation.z = Math.PI / 2
+  jackBoot.position.x = 0.012
+  jackG.add(jackTip, jackBoot)
+  root.add(jackG)
+
+  // zväzok za stolom (káblová viazačka + krátky zväzok)
+  cableTie(root, new THREE.Vector3(0.9, DESK_TOP + 0.01, deskZ), new THREE.Vector3(1, 0, 0))
+  cableTie(root, new THREE.Vector3(0.2, DESK_TOP + 0.01, deskZ), new THREE.Vector3(1, 0, 0))
 }
 
 /* 17-buildclock-nastenne-hodiny-ukazuju-skutocny-cas.js */
@@ -2053,6 +2967,7 @@ function updateClock() {
   clockS.rotation.z = (-sec / 60) * T
   clockM.rotation.z = (-min / 60) * T
   clockH.rotation.z = (-hr / 12) * T
+  sfxTick(sec % 2 === 0)
 }
 
 /* 18-buildlights-ceiling-pendant-desk-lamp-light-dark.js */
@@ -2338,13 +3253,15 @@ function setTimeOfDay(i, q, skipSave, fromAuto = false) {
     applyMix()
     if (ch && !q) sfxChime()
   }
+  syncClimateUi()
   if (!skipSave) savePrefs()
 }
 function applyTime(dt) {
   const p = P[S.i],
     k = 1 - 0.02 ** dt
   if (drag < 0) S.open += (S.openT - S.open) * k
-  S.dark += (S.darkT - S.dark) * k
+  S.ceil += (S.ceilT - S.ceil) * k
+  S.lamp += (S.lampT - S.lamp) * k
   S.sp.lerp(TV.set(...p.sp), k)
   S.sc.lerp(TC.set(p.sc), k)
   S.sky.lerp(TC2.set(p.sky), k)
@@ -2356,18 +3273,19 @@ function applyTime(dt) {
     sfxThunder()
   }
   const tr = S.open * (0.25 + 0.75 * Math.cos(S.blade * 1.4))
+  const lit = Math.min(1, S.ceil * 0.7 + S.lamp * 0.55)
   // outer
   sun.position.copy(sun.target.position).add(TV.set(S.sp.x, S.sp.y * 0.6, S.sp.z))
   sun.color.copy(S.sc)
-  sun.intensity = S.si * 0.9 * (0.5 + 0.5 * S.open) * (1 - S.dark * 0.72) + S.flash * 3
-  amb.intensity = (S.amb * 1.4 + 0.1 + S.flash * 0.8) * (1 - S.dark * 0.5) + S.dark * 0.22
-  renderer.toneMappingExposure = 1.18 + S.dark * 0.42
+  sun.intensity = S.si * 0.9 * (0.5 + 0.5 * S.open) + S.flash * 3
+  amb.intensity = S.amb * 1.4 + 0.1 + S.flash * 0.8 + lit * 0.28
+  renderer.toneMappingExposure = 1.12 + lit * 0.2
   const sk = skyM || (skyM = scene.getObjectByName('sky'))
   if (sk.material.map) {
-    sk.material.color.set(1, 1, 1).multiplyScalar((1 + S.flash * 0.5) * (1 - S.dark * 0.22))
+    sk.material.color.set(1, 1, 1).multiplyScalar(1 + S.flash * 0.5)
     if (S.i === 5) sk.material.color.multiplyScalar(0.88)
   } else {
-    sk.material.color.copy(S.sky).multiplyScalar((1 + S.flash) * (1 - S.dark * 0.6))
+    sk.material.color.copy(S.sky).multiplyScalar(1 + S.flash)
     if (S.i === 5) sk.material.color.multiplyScalar(0.72)
     if (S.i === 6) sk.material.color.lerp(new THREE.Color(0x0a1535), 0.35)
   }
@@ -2384,13 +3302,13 @@ function applyTime(dt) {
   slats.forEach((s) => (s.rotation.z = S.blade * 1.3))
   sashL.rotation.y = S.open * 1.4
   sashR.rotation.y = -S.open * 1.4
-  const Ld = S.dark
-  ceilL.intensity = (1 - Ld) * 7
-  deskL.intensity = Ld * 6.5
-  deskFill.intensity = Ld * 4.2
-  bulbM.emissiveIntensity = (1 - Ld) * 2.2
-  deskBulb.emissiveIntensity = Ld * 12
-  scene.background = new THREE.Color(0x252019).multiplyScalar(1 - Ld * 0.38)
+  // strop a lampa sú nezávislé
+  ceilL.intensity = S.ceil * 7
+  deskL.intensity = S.lamp * 6.5
+  deskFill.intensity = S.lamp * 4.2
+  bulbM.emissiveIntensity = S.ceil * 2.2
+  deskBulb.emissiveIntensity = S.lamp * 12
+  scene.background = new THREE.Color(0x252019).multiplyScalar(0.72 + lit * 0.28)
   hudDirty = true
   if (A.ctx && Math.abs(S.open - (A._lastOpen ?? -1)) > 0.01) {
     A._lastOpen = S.open
@@ -2399,7 +3317,7 @@ function applyTime(dt) {
 }
 
 /* 22-zvuky-vsetko-generovane-v-kode-web-audio.js */
-const A = { ctx: null, on: true, mixB: 0 }
+const A = { ctx: null, on: true }
 const MIX = [
   [0.15, 0, 0.85, 0],
   [0.1, 0, 1, 0],
@@ -2408,15 +3326,7 @@ const MIX = [
   [0.15, 0, 0.2, 0.45],
   [0.45, 1, 0.05, 0],
   [0.08, 0, 0.15, 0.2],
-] // vietor, dážď, vtáky, cvrčky
-const BIRDS = [
-  { sk: 'Sýkorka veľká', latin: 'Parus major', f0: 3100, dur: 0.08, n: 4, gap: 0.08 },
-  { sk: 'Ľubica poľná', latin: 'Alauda arvensis', f0: 2500, dur: 0.11, n: 5, gap: 0.1 },
-  { sk: 'Rehanka obyčajná', latin: 'Erithacus rubecula', f0: 2800, dur: 0.09, n: 3, gap: 0.12 },
-  { sk: 'Straka obyčajná', latin: 'Pica pica', f0: 850, dur: 0.16, n: 2, gap: 0.18 },
-  { sk: 'Hrdlička záhradná', latin: 'Columba livia', f0: 1300, dur: 0.13, n: 3, gap: 0.14 },
-  { sk: 'Škorec obyčajný', latin: 'Sturnus vulgaris', f0: 2200, dur: 0.07, n: 6, gap: 0.06 },
-]
+] // vietor, dážď, (nepoužité), cvrčky
 function audioInit() {
   if (A.ctx || !A.on) return
   const c = (A.ctx = new (window.AudioContext || window.webkitAudioContext)())
@@ -2430,7 +3340,6 @@ function audioInit() {
   A.lp.type = 'lowpass'
   A.lp.frequency.value = 420 + S.open * 6200
   A.lp.connect(A.og)
-  A.birdVol = 0.03
   const nb = c.createBuffer(1, c.sampleRate * 2, c.sampleRate),
     d = nb.getChannelData(0)
   for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1
@@ -2510,29 +3419,29 @@ function audioInit() {
   cl.start()
   applyMix()
 }
+function windowIsOpen() {
+  return S.openT > 0.5 && S.open > 0.25
+}
 function outdoorDoor() {
-  // cez sklo stále trochu vonkajšieho zvuku; vietor do izby ide len cez otvor
-  return 0.22 + 0.78 * Math.max(0, Math.min(1, S.open))
+  // vonkajší zvuk len keď je okno naozaj otvorené
+  return windowIsOpen() ? Math.max(0, Math.min(1, S.open)) : 0
 }
 function applyMix() {
   if (!A.ctx) return
   const m = MIX[S.i],
     t = A.ctx.currentTime
-  const open = Math.max(0, Math.min(1, S.open))
   const door = outdoorDoor()
-  // vietor do miestnosti: pri zatvorenom okne takmer ticho
-  const windIn = m[0] * open * open * (0.42 + 0.28 * open)
-  A.wind.gain.setTargetAtTime(windIn, t, 0.25)
-  A.og.gain.setTargetAtTime(0.28 + 0.72 * open, t, 0.2)
-  A.lp.frequency.setTargetAtTime(420 + open * 6200, t, 0.2)
+  const openWin = windowIsOpen()
+  // vietor do miestnosti: pri zatvorenom okne ticho
+  const windIn = m[0] * door * door * (0.42 + 0.28 * door)
+  A.wind.gain.setTargetAtTime(windIn, t, 0.2)
+  A.og.gain.setTargetAtTime(openWin ? 0.35 + 0.65 * door : 0.02, t, 0.15)
+  A.lp.frequency.setTargetAtTime(420 + door * 6200, t, 0.15)
   const rain = m[1] * door * (S.i === 5 ? 1.15 : 1)
-  A.rain.gain.setTargetAtTime(rain * 0.22, t, 0.5)
-  A.rainRoar.gain.setTargetAtTime(rain * 0.42, t, 0.7)
-  // cvrčky / večer – cez zatvorené okno slabšie
-  A.cr.gain.setTargetAtTime(m[3] * 0.028 * (0.35 + 0.65 * door), t, 1.2)
-  // vtáky: aj pri zatvorenom okne počuť (stlmené), pri otvorenom hlasnejšie
-  A.mixB = m[2] * (0.4 + 0.6 * door)
-  A.birdVol = 0.028 * (0.45 + 0.9 * door)
+  A.rain.gain.setTargetAtTime(rain * 0.22, t, 0.4)
+  A.rainRoar.gain.setTargetAtTime(rain * 0.42, t, 0.6)
+  // cvrčky – len cez otvorené okno
+  A.cr.gain.setTargetAtTime(openWin ? m[3] * 0.028 * door : 0, t, 0.35)
 }
 function rainDrip() {
   if (!A.ctx || !A.on || S.i !== 5 || S.open < 0.2) return
@@ -2558,34 +3467,6 @@ function rainDrip() {
 setInterval(() => {
   if (A.ctx && A.on && S.i === 5 && Math.random() < 0.55) rainDrip()
 }, 120)
-function birdCall() {
-  if (!A.ctx || !A.on || A.mixB < 0.05) return
-  const b = BIRDS[Math.floor(Math.random() * BIRDS.length)],
-    c = A.ctx,
-    t = c.currentTime
-  const vol = A.birdVol ?? 0.03
-  for (let k = 0; k < b.n; k++) {
-    const o = c.createOscillator(),
-      g = c.createGain(),
-      s = t + k * b.gap
-    o.type = k % 2 ? 'sine' : 'triangle'
-    o.frequency.setValueAtTime(b.f0 * (0.88 + Math.random() * 0.22), s)
-    o.frequency.exponentialRampToValueAtTime(b.f0 * 1.12, s + b.dur)
-    g.gain.setValueAtTime(0, s)
-    g.gain.linearRampToValueAtTime(vol, s + 0.008)
-    g.gain.exponentialRampToValueAtTime(0.001, s + b.dur)
-    o.connect(g)
-    g.connect(A.lp)
-    o.start(s)
-    o.stop(s + b.dur + 0.05)
-  }
-  const tip = $('birdTip')
-  if (tip && S.open > 0.35) {
-    tip.innerHTML = `<strong>${b.sk}</strong><br><span style="color:#b8aea3;font-size:11px">${b.latin}</span>`
-    tip.classList.add('show')
-    setTimeout(() => tip.classList.remove('show'), 3400)
-  }
-}
 function burst(type, f, dur, vol, dest) {
   const c = A.ctx,
     t = c.currentTime,
@@ -2603,9 +3484,6 @@ function burst(type, f, dur, vol, dest) {
   s.start(t, Math.random())
   s.stop(t + dur)
 }
-setInterval(() => {
-  if (A.ctx && A.on && Math.random() < Math.min(0.85, A.mixB * 0.75 + 0.12)) birdCall()
-}, 900)
 function sfxWindow(open) {
   if (!A.ctx || !A.on) return
   const c = A.ctx,
@@ -2660,6 +3538,30 @@ function sfxClick() {
   setTimeout(() => {
     if (A.ctx) burst('lowpass', 150, 0.1, 0.6)
   }, 40)
+}
+function sfxTick(tock = false) {
+  if (!A.ctx || !A.on) return
+  const c = A.ctx,
+    t = c.currentTime,
+    o = c.createOscillator(),
+    g = c.createGain(),
+    f = c.createBiquadFilter()
+  o.type = 'triangle'
+  f.type = 'bandpass'
+  f.frequency.value = tock ? 980 : 1280
+  f.Q.value = 14
+  o.frequency.setValueAtTime(tock ? 620 : 780, t)
+  o.frequency.exponentialRampToValueAtTime(tock ? 280 : 360, t + 0.045)
+  g.gain.setValueAtTime(0, t)
+  g.gain.linearRampToValueAtTime(tock ? 0.028 : 0.034, t + 0.004)
+  g.gain.exponentialRampToValueAtTime(0.0008, t + 0.07)
+  o.connect(f)
+  f.connect(g)
+  g.connect(A.master)
+  o.start(t)
+  o.stop(t + 0.09)
+  // krátky mechanický „cvak“
+  burst('highpass', tock ? 2400 : 3200, 0.025, 0.12)
 }
 function sfxThunder() {
   if (!A.ctx || !A.on) return
@@ -2842,7 +3744,8 @@ function isNoteOffBoard(mesh) {
   const p = mesh.position
   return p.x < -0.72 || p.x > 0 || p.y < 1.72 || p.y > 2.2
 }
-const HINT_DEFAULT = 'Papier: klik = čítať · klikni pero = farba · P = písať · E = sedenie'
+const HINT_DEFAULT =
+  'E = sadnúť · Papier: klik / P = písať · nástenka: Shift+klik / Delete'
 const HINT_BOARD =
   'Nástenka: ťahaj lístky po korku · dvojklik = hod do koša · Shift+klik = zmazať · Esc = späť'
 const HINT_TRASH = 'Kôš: pohľad na neporiadok · klik na pedál alebo Esc = späť'
@@ -3041,6 +3944,8 @@ function hudAct(x, y, start) {
         if (k === 'open') {
           S.openT = S[k]
           setSw('bWin', S.openT > 0.5)
+          if (S.openT <= 0.5) S.open = 0
+          if (A.ctx) applyMix()
         }
         hudDirty = true
       }
@@ -3237,7 +4142,8 @@ cv.addEventListener(
 )
 cv.addEventListener('click', (e) => {
   if (Math.hypot(e.clientX - pdx, e.clientY - pdy) >= 6) return
-  if (pick(e, lampG) || pick(e, switchBox) || pick(e, ceilHit)) toggleMode()
+  if (pick(e, lampG)) toggleLamp()
+  else if (pick(e, switchBox) || pick(e, ceilHit)) toggleCeil()
   else if (!pano && pickTrash(e)) toggleTrash()
 })
 cv.addEventListener(
@@ -3340,16 +4246,30 @@ function tabClick(e) {
   }
   return false
 }
-function toggleMode() {
-  S.darkT = S.darkT ? 0 : 1
-  setSw('bMode', !!S.darkT)
+function toggleCeil() {
+  S.ceilT = S.ceilT > 0.5 ? 0 : 1
+  if ($('bCeil')) setSw('bCeil', S.ceilT > 0.5)
+  sfxClick()
+  savePrefs()
+}
+function toggleLamp() {
+  S.lampT = S.lampT > 0.5 ? 0 : 1
+  if ($('bLamp')) setSw('bLamp', S.lampT > 0.5)
   sfxClick()
   savePrefs()
 }
 addEventListener('keydown', (e) => {
-  if (e.key === 'l' || e.key === 'L') toggleMode()
+  if (e.key === 'l' || e.key === 'L') toggleLamp()
+  if (e.key === 'c' || e.key === 'C') toggleCeil()
   if (e.key === 'r' || e.key === 'R') resetView()
 })
+function typingUi() {
+  return (
+    $('noteDlg')?.classList.contains('open') ||
+    $('paperDlg')?.classList.contains('open') ||
+    /^(INPUT|TEXTAREA)$/.test(document.activeElement?.tagName || '')
+  )
+}
 function syncViewUi() {
   $('bOrb').classList.toggle('on', !pano && !topView && !sitting)
   $('bPano').classList.toggle('on', pano)
@@ -3422,13 +4342,14 @@ P.forEach((p, i) => {
 $('bWin').onclick = () => {
   S.openT = S.openT > 0.5 ? 0 : 1
   setSw('bWin', S.openT > 0.5)
+  if (S.openT <= 0.5) S.open = 0
   sfxWindow(S.openT > 0.5)
   if (A.ctx) applyMix()
   savePrefs()
 }
 $('bPano').onclick = () => setPano(pano && panoAnchor === 'seat' ? false : !pano)
 $('bOrb').onclick = () => {
-  if (sitting) setSitting(false, true)
+    if (sitting) setSitting(false, true)
   setTopView(false)
   setPano(false)
   returning = 120
@@ -3437,13 +4358,8 @@ $('bOrb').onclick = () => {
 $('bTop').onclick = () => setTopView(true)
 $('bReset').onclick = resetView
 $('bBack').onclick = resetView
-$('bSnow').onclick = () => {
-  snowOn = !snowOn
-  setSw('bSnow', snowOn)
-  savePrefs()
-  if (S.i === 6) sfxChime()
-}
 $('bSit').onclick = () => setSitting(!sitting)
+$('bRad').onclick = () => setRadiator(!radiatorOn)
 $('bTrash').onclick = () => toggleTrash()
 $('bPwrAoc').onclick = () => togglePwr('aoc')
 $('bPwrDell').onclick = () => togglePwr('dell')
@@ -3465,7 +4381,8 @@ $('paperText')?.addEventListener('input', () => {
     ta.style.caretColor = paperInk()
   }
 })
-$('bMode').onclick = toggleMode
+$('bCeil').onclick = () => toggleCeil()
+$('bLamp').onclick = () => toggleLamp()
 $('bSnd').onclick = () => {
   setSound(!A.on)
   setSw('bSnd', A.on)
@@ -3508,6 +4425,7 @@ try {
   buildRoom()
   buildDesk()
   buildChair()
+  buildRoomExtras()
   buildTrashBin()
   buildPaper()
   refreshPaper()
@@ -3520,7 +4438,6 @@ try {
   buildCables()
   buildLights()
   buildClock()
-  buildSnow()
   buildRain()
   buildNested()
   applyPrefs(loadPrefs())
@@ -3543,6 +4460,7 @@ renderer.setAnimationLoop(() => {
       t = clock.elapsedTime
     fr++
     applyTime(dt)
+    updateClimate(dt)
     const kz = 1 - 0.002 ** dt
     if (pano) {
       controls.enabled = false
@@ -3570,11 +4488,12 @@ renderer.setAnimationLoop(() => {
       seatLookAt()
     } else if (zoom) {
       controls.enabled = false
-      const fovTgt = zoom === 'trash' ? 40 : zoom === 'paper' ? 26 : 35
+      const fovTgt = zoom === 'trash' ? 40 : zoom === 'paper' ? 32 : 35
       setFov(camera.fov + (fovTgt - camera.fov) * kz)
       const Z = ZOOMS[zoom]
       camera.position.lerp(Z[0], kz)
       controls.target.lerp(Z[1], kz)
+      camera.up.set(0, 1, 0)
       camera.lookAt(controls.target)
       if (zoom === 'trash') setTrashOpen(true, true)
       if (paperReadL) paperReadL.visible = zoom === 'paper'
@@ -3598,8 +4517,7 @@ renderer.setAnimationLoop(() => {
       $('bBack').style.display = bb
       lastBB = bb
     }
-    // idle animation
-    medals.forEach((m, i) => (m.rotation.z = Math.sin(t * 1.3 + i) * 0.03))
+    updateMedalsWind(t)
     leds.forEach((l, i) => (l.visible = Math.sin(t * 9 + i * 2.1) > -0.3))
     applyMacLid(dt)
     updateTrashLid(dt)
@@ -3657,7 +4575,7 @@ renderer.setAnimationLoop(() => {
       3.6 * Math.cos(a) - 3.2 * Math.sin(a)
     )
     nc.lookAt(0, 0.9, 0)
-    const sig = [S.sp.x, S.sp.y, S.sp.z, S.si, S.dark, S.open, S.blade, S.flash]
+    const sig = [S.sp.x, S.sp.y, S.sp.z, S.si, S.ceil, S.lamp, S.open, S.blade, S.flash]
         .map((v) => v.toFixed(3))
         .join(),
       sd = sig !== lastSig
