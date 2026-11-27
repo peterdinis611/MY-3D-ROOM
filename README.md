@@ -1,17 +1,19 @@
-# Desk study (Three.js + Vite)
+# Desk study (Three.js + Vite + TypeScript)
 
 Interaktívna izba – Aperture and air.
 
 ## Štruktúra
 
-| Súbor / priečinok | Účel                                      |
-| ----------------- | ----------------------------------------- |
-| `index.html`      | HTML shell, UI, dialógy                   |
-| `css/app.css`     | Štýly                                     |
-| `src/main.js`     | Vite vstup – Three.js + spustenie app     |
-| `src/app.js`      | **Hlavný zdroják** (úpravy sem)           |
-| `src/chunks/`     | Voliteľné logické bloky (`npm run split`) |
-| `vite.config.js`  | Konfigurácia Vite                         |
+| Súbor / priečinok | Účel |
+| ----------------- | ---- |
+| `index.html` | HTML shell, UI, dialógy |
+| `css/app.css` | Štýly |
+| `src/main.ts` | Vite vstup |
+| `src/app.ts` | **Hlavný zdroják** scény (+ extras) |
+| `src/dom.ts` | Typed DOM helpery |
+| `src/chunks/` | Voliteľné logické bloky (`npm run split`) |
+| `tsconfig.json` | TypeScript |
+| `vite.config.ts` | Vite |
 
 ## Spustenie
 
@@ -22,34 +24,33 @@ npm run dev
 
 Otvorí sa [http://127.0.0.1:5173/](http://127.0.0.1:5173/).
 
+## TypeScript
+
+```bash
+npm run typecheck   # tsc --noEmit
+```
+
+`src/app.ts` má zatiaľ `// @ts-nocheck` (veľký legacy modul). Nový kód dávaj do malých typed súborov (`dom.ts`, …) a postupne odřezávaj časti z `app.ts`.
+
 ## Formátovanie (Biome)
 
 ```bash
-npm run format   # formátovanie
-npm run lint     # lint
-npm run check    # format + lint + safe fixes
+npm run format
+npm run lint
+npm run check
 ```
-
-Konfigurácia: `biome.json` (2 medzery, single quotes). Generované `src/chunks/` sú vylúčené.
 
 ## Build
 
 ```bash
-npm run build    # výstup do dist/
-npm run preview  # náhľad produkčného buildu
+npm run build    # tsc + vite → dist/
+npm run preview
 ```
 
 ## Úpravy
 
-Upravuj **`src/app.js`**. Vite má HMR – po uložení sa stránka obnoví.
-
-Voliteľne rozdeliť na chunky na čítanie:
+Upravuj **`src/app.ts`**. Vite HMR obnoví stránku po uložení.
 
 ```bash
-npm run split
+npm run split    # voliteľné chunky len na čítanie
 ```
-
-## Poznámky
-
-- Three.js je npm závislosť (`three@0.160`).
-- Nastavenia a poznámky idú do `localStorage`.

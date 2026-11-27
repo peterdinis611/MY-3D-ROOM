@@ -26,9 +26,21 @@
 <div class="lab">Technika</div>
 <div class="row"><span>Monitor AOC</span><button type="button" class="sw on" id="bPwrAoc" aria-pressed="true" aria-label="Monitor AOC"></button></div>
 <div class="row"><span>Monitor Dell</span><button type="button" class="sw on" id="bPwrDell" aria-pressed="true" aria-label="Monitor Dell"></button></div>
-<div class="row"><span>MacBook</span><button type="button" class="sw on" id="bPwrMac" aria-pressed="true" aria-label="MacBook"></button></div>
+<div class="row"><span>MacBook napájanie</span><button type="button" class="sw on" id="bPwrMac" aria-pressed="true" aria-label="MacBook napájanie"></button></div>
+<div class="row"><span>MacBook veko</span><button type="button" class="sw on" id="bMacLid" aria-pressed="true" aria-label="MacBook veko"></button></div>
+<div class="row"><span>Písať na MacBooku</span><button type="button" id="bMacWrite">Terminál</button></div>
+<div class="row"><span>Focus 25 min</span><button type="button" class="sw" id="bFocus" aria-pressed="false" aria-label="Focus"></button></div>
+<div class="row"><span>Hudba</span><button type="button" class="sw" id="bMusic" aria-pressed="false" aria-label="Hudba"></button></div>
+<div class="lab">Presety</div>
+<div class="seg"><button type="button" id="bPresetRano">Ráno</button><button type="button" id="bPresetDeep">Deep work</button><button type="button" id="bPresetVecer">Večer</button></div>
+<div class="lab">Animácie</div>
+<div class="row"><span>Kamera <small id="lblCam">1.0</small></span><input type="range" id="rngCam" min="0.5" max="1.6" step="0.1" value="1" aria-label="Plynulosť kamery"></div>
+<div class="row"><span>Veko Mac <small id="lblLid">1.0</small></span><input type="range" id="rngLid" min="0.5" max="1.6" step="0.1" value="1" aria-label="Rýchlosť veka"></div>
+<div class="row"><span>Menej pohybu</span><button type="button" class="sw" id="bReduceMotion" aria-pressed="false" aria-label="Menej pohybu"></button></div>
+<div class="row"><span>Focus = sadnúť</span><button type="button" class="sw" id="bFocusSit" aria-pressed="false" aria-label="Focus sadne"></button></div>
 </div></div>
 <button type="button" id="bBack">← Späť na pohľad na stôl</button>
+<div id="focusHud" aria-live="polite"></div>
 <div id="noteDlg" role="dialog" aria-labelledby="noteDlgTitle" aria-modal="true">
 <div class="card">
 <h2 id="noteDlgTitle">Nový lístok</h2>
@@ -61,13 +73,24 @@
 </div>
 </div>
 </div>
-<div id="hint">E = sadnúť · Papier: klik / P · Kvetina: klik / W = zaliať · nástenka: Shift+klik / Delete</div>
+<div id="macDlg" role="dialog" aria-labelledby="macDlgTitle" aria-modal="true">
+<div class="card macCard">
+<h2 id="macDlgTitle">MacBook — terminál</h2>
+<p>Píš príkazy / poznámky. Uložia sa na obrazovku notebooku.</p>
+<textarea id="macText" spellcheck="false" placeholder="$ echo „ahoj“&#10;ahoj&#10;$ "></textarea>
+<div class="acts">
+<button type="button" id="macCancel">Zavrieť</button>
+<button type="button" id="macSave" class="primary">Uložiť na obrazovku</button>
+</div>
+</div>
+</div>
+<div id="hint">E = sadnúť · pri sedení: ĽMB = myš, RMB = rozhliadaj · klik/W = zaliať</div>
 <div id="climate" aria-live="polite">
   <div class="climate-day" id="climateDay">Ráno</div>
   <div class="climate-temp"><span id="climateTemp">21.0</span><span class="climate-unit"> °C</span></div>
   <div class="climate-out">Vonku <span id="climateOut">14</span>°</div>
   <div class="climate-row"><span>Radiátor</span><button type="button" class="sw" id="bRad" aria-pressed="false" aria-label="Radiátor"></button></div>
 </div>
-<script type="module" src="/src/main.js"></script>
+<script type="module" src="/src/main.ts"></script>
 </body>
 </html>

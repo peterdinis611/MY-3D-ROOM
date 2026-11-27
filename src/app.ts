@@ -1,3 +1,10 @@
+// @ts-nocheck — postupné typovanie po moduloch; runtime je už ostrý ES modul
+import * as THREE from 'three'
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js'
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js'
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
+
 /* 01-helpers.js */
 const M = (c, r = 0.8, m = 0) =>
   new THREE.MeshStandardMaterial({ color: c, roughness: r, metalness: m })
@@ -43,6 +50,10 @@ const wood = (a, b) =>
 const screenMat = (t) => new THREE.MeshBasicMaterial({ map: t, toneMapped: false })
 const DESK_TOP = 0.765,
   RISER_TOP = 0.948
+let teaMugG = null,
+  coffeeMugG = null,
+  deskMouseG = null,
+  roomSpeakerG = null
 const onDesk = (x, z, r = 0.002) => [x, DESK_TOP + r, z]
 const cableMats = {
   white: new THREE.MeshStandardMaterial({ color: 0xf3f1ec, roughness: 0.82, metalness: 0.02 }),
@@ -710,6 +721,13 @@ function buildDesk() {
 /* 07-papier-na-stole-zapis-localstorage.js */
 const PAPER_LS = 'deskstudy-paper-v1'
 const PREF_LS = 'deskstudy-prefs-v1'
+/** Globálne nastavenia animácií / správania (prefs). */
+const Anim = {
+  camSmooth: 1, // 0.5 rýchle … 1.5 pomalé
+  lidSmooth: 1,
+  reduceMotion: false,
+  focusAutoSit: false, // focus NEzapína sedenie samo
+}
 function defaultPrefs() {
   return {
     day: 1,
@@ -724,8 +742,13 @@ function defaultPrefs() {
     pwrAoc: 1,
     pwrDell: 1,
     pwrMac: 1,
+    macOpen: 1,
     uiFold: 0,
     rad: 0,
+    camSmooth: 1,
+    lidSmooth: 1,
+    reduceMotion: 0,
+    focusAutoSit: 0,
   }
 }
 function loadPrefs() {
@@ -761,13 +784,23 @@ function savePrefs() {
         pwrAoc: PWR.aoc ? 1 : 0,
         pwrDell: PWR.dell ? 1 : 0,
         pwrMac: PWR.mac ? 1 : 0,
+        macOpen: macOpen ? 1 : 0,
         uiFold: $('ui')?.classList.contains('fold') ? 1 : 0,
         rad: radiatorOn ? 1 : 0,
+        camSmooth: Anim.camSmooth,
+        lidSmooth: Anim.lidSmooth,
+        reduceMotion: Anim.reduceMotion ? 1 : 0,
+        focusAutoSit: Anim.focusAutoSit ? 1 : 0,
       })
     )
   } catch {}
 }
 function applyPrefs(p) {
+  Anim.camSmooth = Math.max(0.45, Math.min(1.8, +p.camSmooth || 1))
+  Anim.lidSmooth = Math.max(0.45, Math.min(1.8, +p.lidSmooth || 1))
+  Anim.reduceMotion = !!p.reduceMotion
+  Anim.focusAutoSit = !!p.focusAutoSit
+  syncAnimUi()
   const day = Math.min(P.length - 1, Math.max(0, p.day | 0))
   setTimeOfDay(day, true, true)
   S.openT = S.open = p.open ? 1 : 0
@@ -790,11 +823,13 @@ function applyPrefs(p) {
   PWR.aoc = !!p.pwrAoc
   PWR.dell = !!p.pwrDell
   PWR.mac = !!p.pwrMac
+  macOpen = p.macOpen !== 0
   setSw('bPwrAoc', PWR.aoc)
   setSw('bPwrDell', PWR.dell)
   setSw('bPwrMac', PWR.mac)
+  setSw('bMacLid', macOpen)
   applyDevicePower(true)
-  macLidAng = PWR.mac ? -0.35 : -0.02
+  macLidAng = macOpen ? MAC_LID_OPEN : MAC_LID_CLOSED
   setRadiator(!!p.rad, true)
   outdoorTemp = outdoorForDay()
   roomTemp = roomTempTarget()
@@ -930,34 +965,64 @@ function addPenPart(g, mesh) {
   return mesh
 }
 /** Valec/kužeľ pozdĺž osi X (hrot smeruje k −X). */
-function penAlongX(geo, mat, x, y = 0) {
+function penAlongX(geo, mat, x, y = 0, z = 0) {
   const m = new THREE.Mesh(geo, mat)
   m.rotation.z = Math.PI / 2
-  m.position.set(x, y, 0)
+  m.position.set(x, y, z)
   return m
 }
 function buildBallpointPen(id, bodyCol, x, y, z, yaw) {
   const g = new THREE.Group()
   g.position.set(x, y, z)
   g.rotation.y = yaw
-  const body = M(bodyCol, 0.36, 0.2)
-  const chrome = M(0xc9cad0, 0.28, 0.88)
-  const tipM = M(0x2c2c30, 0.32, 0.75)
-  const inkDot = M(0x111111, 0.25, 0.9)
-  addPenPart(g, penAlongX(new THREE.CylinderGeometry(0.007, 0.0076, 0.085, 20), body, 0.002))
-  addPenPart(g, penAlongX(new THREE.CylinderGeometry(0.0064, 0.007, 0.014, 14), chrome, -0.046))
-  const cone = new THREE.Mesh(new THREE.ConeGeometry(0.0064, 0.015, 14), tipM)
+  const body = M(bodyCol, 0.32, 0.28)
+  const bodyDark = M(
+    new THREE.Color(bodyCol).multiplyScalar(0.72).getHex(),
+    0.4,
+    0.22
+  )
+  const chrome = M(0xd4d6dc, 0.22, 0.95)
+  const tipM = M(0x1a1a1e, 0.28, 0.85)
+  const plastic = M(0xe8e8ec, 0.45, 0.15)
+  const inkDot = M(0x0a0a0a, 0.2, 0.95)
+  // telo + jemný taper
+  addPenPart(g, penAlongX(new THREE.CylinderGeometry(0.0068, 0.0074, 0.072, 24), body, 0))
+  // grip krúžky (torus okolo osi X)
+  for (let i = 0; i < 4; i++) {
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(0.0072, 0.00055, 8, 20), bodyDark)
+    ring.rotation.y = Math.PI / 2
+    ring.position.set(-0.018 - i * 0.006, 0, 0)
+    addPenPart(g, ring)
+  }
+  // predný chróm + kužeľ + gulička
+  addPenPart(g, penAlongX(new THREE.CylinderGeometry(0.0058, 0.0068, 0.012, 16), chrome, -0.042))
+  const cone = new THREE.Mesh(new THREE.ConeGeometry(0.0058, 0.014, 16), tipM)
   cone.rotation.z = -Math.PI / 2
-  cone.position.set(-0.056, 0, 0)
+  cone.position.set(-0.054, 0, 0)
   addPenPart(g, cone)
-  const ball = new THREE.Mesh(new THREE.SphereGeometry(0.0018, 10, 8), inkDot)
-  ball.position.set(-0.064, 0, 0)
+  const ball = new THREE.Mesh(new THREE.SphereGeometry(0.0016, 12, 10), inkDot)
+  ball.position.set(-0.062, 0, 0)
   addPenPart(g, ball)
-  const clip = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.0024, 0.007), chrome)
-  clip.position.set(0.032, 0.0085, 0)
+  // klip (ohyb)
+  const clip = new THREE.Group()
+  clip.position.set(0.028, 0.0078, 0)
+  const clipArm = new THREE.Mesh(new THREE.BoxGeometry(0.034, 0.0018, 0.006), chrome)
+  clipArm.position.set(0.002, 0, 0)
+  clip.add(clipArm)
+  const clipTip = new THREE.Mesh(new THREE.BoxGeometry(0.006, 0.0022, 0.0065), chrome)
+  clipTip.position.set(-0.016, -0.0012, 0)
+  clipTip.rotation.z = 0.35
+  clip.add(clipTip)
+  const clipPad = new THREE.Mesh(new THREE.SphereGeometry(0.0022, 8, 6), plastic)
+  clipPad.position.set(-0.018, -0.0025, 0)
+  clip.add(clipPad)
   addPenPart(g, clip)
-  addPenPart(g, penAlongX(new THREE.CylinderGeometry(0.0052, 0.0056, 0.012, 12), chrome, 0.05))
-  addPenPart(g, penAlongX(new THREE.CylinderGeometry(0.0034, 0.0034, 0.01, 10), tipM, 0.06))
+  // zadný uzáver + gombík
+  addPenPart(g, penAlongX(new THREE.CylinderGeometry(0.007, 0.0064, 0.014, 16), chrome, 0.043))
+  addPenPart(g, penAlongX(new THREE.CylinderGeometry(0.004, 0.0048, 0.008, 12), tipM, 0.054))
+  const clicker = new THREE.Mesh(new THREE.SphereGeometry(0.0036, 12, 8), plastic)
+  clicker.position.set(0.06, 0, 0)
+  addPenPart(g, clicker)
   g.userData = { penId: id, baseY: y }
   paperG.add(g)
   penMeshes[id] = g
@@ -967,22 +1032,33 @@ function buildPencilPen(id, x, y, z, yaw) {
   const g = new THREE.Group()
   g.position.set(x, y, z)
   g.rotation.y = yaw
-  const wood = M(0xd2a46a, 0.72, 0.04)
-  const paint = M(0xe8b84a, 0.55, 0.06)
-  const graphite = M(0x2a2a2a, 0.4, 0.15)
-  const ferrule = M(0xb8b8bc, 0.3, 0.82)
-  const eraser = M(0xe89aa0, 0.68, 0.04)
-  addPenPart(g, penAlongX(new THREE.CylinderGeometry(0.0062, 0.0062, 0.08, 6), paint, 0.004))
-  const woodTip = new THREE.Mesh(new THREE.ConeGeometry(0.0062, 0.018, 6), wood)
+  const wood = M(0xd8ae78, 0.68, 0.05)
+  const paint = M(0xf0c24a, 0.48, 0.08)
+  const graphite = M(0x222226, 0.35, 0.2)
+  const ferrule = M(0xc8c8ce, 0.25, 0.9)
+  const eraser = M(0xe89298, 0.62, 0.05)
+  // šesťhran
+  addPenPart(g, penAlongX(new THREE.CylinderGeometry(0.0064, 0.0064, 0.078, 6), paint, 0.002))
+  // pruhy na ceruzke
+  addPenPart(g, penAlongX(new THREE.CylinderGeometry(0.00655, 0.00655, 0.004, 6), M(0x2a2a30, 0.5), 0.01))
+  addPenPart(g, penAlongX(new THREE.CylinderGeometry(0.00655, 0.00655, 0.004, 6), M(0x2a2a30, 0.5), -0.012))
+  const woodTip = new THREE.Mesh(new THREE.ConeGeometry(0.0064, 0.02, 6), wood)
   woodTip.rotation.z = -Math.PI / 2
-  woodTip.position.set(-0.048, 0, 0)
+  woodTip.position.set(-0.049, 0, 0)
   addPenPart(g, woodTip)
-  const lead = new THREE.Mesh(new THREE.ConeGeometry(0.0022, 0.009, 6), graphite)
+  const lead = new THREE.Mesh(new THREE.ConeGeometry(0.002, 0.01, 6), graphite)
   lead.rotation.z = -Math.PI / 2
-  lead.position.set(-0.06, 0, 0)
+  lead.position.set(-0.062, 0, 0)
   addPenPart(g, lead)
-  addPenPart(g, penAlongX(new THREE.CylinderGeometry(0.0066, 0.0066, 0.012, 12), ferrule, 0.05))
-  addPenPart(g, penAlongX(new THREE.CylinderGeometry(0.006, 0.006, 0.012, 12), eraser, 0.062))
+  // objímka s ryhami
+  addPenPart(g, penAlongX(new THREE.CylinderGeometry(0.0069, 0.0069, 0.014, 16), ferrule, 0.048))
+  for (let i = 0; i < 3; i++) {
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(0.007, 0.0004, 6, 16), M(0x9a9aa0, 0.3, 0.7))
+    ring.rotation.y = Math.PI / 2
+    ring.position.set(0.044 + i * 0.004, 0, 0)
+    addPenPart(g, ring)
+  }
+  addPenPart(g, penAlongX(new THREE.CylinderGeometry(0.0062, 0.0062, 0.011, 16), eraser, 0.06))
   g.userData = { penId: id, baseY: y }
   paperG.add(g)
   penMeshes[id] = g
@@ -1001,8 +1077,8 @@ function buildPaper() {
     side: THREE.DoubleSide,
   })
   ;[
-    [0.014, 0.002, -0.01, 0.04],
-    [-0.01, 0.0012, 0.012, -0.03],
+    [0.014, 0.002, -0.01, Math.PI + 0.04],
+    [-0.01, 0.0012, 0.012, Math.PI - 0.03],
   ].forEach(([x, y, z, rz]) => {
     const s = new THREE.Mesh(new THREE.PlaneGeometry(0.24, 0.165), sheetM)
     s.rotation.x = -Math.PI / 2
@@ -1017,16 +1093,11 @@ function buildPaper() {
     side: THREE.FrontSide,
   })
   const paperGeo = new THREE.PlaneGeometry(0.26, 0.18)
-  // 180° v UV: pôvodný mapping bol zrkadlený + hore nohou pri pohľade na čítanie
-  {
-    const uv = paperGeo.attributes.uv
-    for (let i = 0; i < uv.count; i++) uv.setXY(i, 1 - uv.getX(i), 1 - uv.getY(i))
-    uv.needsUpdate = true
-  }
   paperMesh = new THREE.Mesh(paperGeo, paperMat)
   paperMesh.rotation.x = -Math.PI / 2
+  // 180° v rovine stola → text čitateľný zhora (nie hore nohami)
+  paperMesh.rotation.z = Math.PI + 0.02
   paperMesh.position.set(0, 0.012, 0)
-  paperMesh.rotation.z = 0.02
   paperMesh.renderOrder = 4
   paperMesh.castShadow = false
   paperMesh.receiveShadow = true
@@ -1104,13 +1175,17 @@ function buildChair() {
 }
 function setSitting(on, skipSave = false) {
   if (on === sitting) return
+  // pri písaní / dialógu nikdy automaticky nesadaj (iba explicitný klik na prepínač)
+  if (on && typingUi() && skipSave) return
   if (on && (zoom || pano || topView)) {
     zoom = null
     setPano(false)
     setTopView(false)
   }
   sitting = on
-  returning = on ? 110 : 130
+  // dlhší, plynulejší dojazd kamery
+  const base = Anim.reduceMotion ? 40 : 150
+  returning = on ? base : base + 20
   if (on) {
     initSeatYawPitch()
     seatFov = SEAT_FOV
@@ -1122,34 +1197,277 @@ function setSitting(on, skipSave = false) {
   }
   syncViewUi()
 }
+function camLerpK(dt) {
+  // vyššie camSmooth = pomalší, jemnejší pohyb
+  const base = Anim.reduceMotion ? 0.08 : 0.0012
+  const exp = base ** (dt / Math.max(0.35, Anim.camSmooth))
+  return 1 - exp
+}
 
 /* 08b-doplnky-izby.js */
 let plantG,
   plantLeaves = [],
+  plantStem = null,
   plantSoil,
+  plantGrowth = 0.28,
+  plantGrowthTgt = 0.28,
+  sillPlantG = null,
+  sillLeaves = [],
+  sillGrowth = 0.35,
+  sillGrowthTgt = 0.35,
+  sillWetT = 0,
+  waterTarget = 'floor', // 'floor' | 'sill'
   waterCanG,
+  waterCanHome = null,
   waterDrops,
   waterDropData = [],
   waterAnimT = 0,
-  waterWetT = 0
-function startWaterPlant() {
-  if (waterAnimT > 0.05) return
+  waterWetT = 0,
+  floorDrag = null,
+  floorDragMoved = false,
+  seatLookDrag = false,
+  shelfG,
+  shelfBooks = [],
+  deskBook = null,
+  bookAnim = null
+const PLANT_LS = 'deskstudy-plant-v1'
+const _floorPt = new THREE.Vector3(),
+  _floorPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0)
+function loadPlantState() {
+  try {
+    const r = localStorage.getItem(PLANT_LS)
+    if (!r) return
+    const o = JSON.parse(r)
+    if (typeof o.growth === 'number') {
+      plantGrowth = plantGrowthTgt = Math.max(0.15, Math.min(1, o.growth))
+    }
+    if (typeof o.sillGrowth === 'number') {
+      sillGrowth = sillGrowthTgt = Math.max(0.15, Math.min(1, o.sillGrowth))
+    }
+    if (o.can && waterCanG) {
+      waterCanG.position.set(o.can.x, 0, o.can.z)
+    }
+  } catch {}
+}
+function savePlantState() {
+  try {
+    localStorage.setItem(
+      PLANT_LS,
+      JSON.stringify({
+        growth: plantGrowthTgt,
+        sillGrowth: sillGrowthTgt,
+        can: waterCanG
+          ? { x: +waterCanG.position.x.toFixed(3), z: +waterCanG.position.z.toFixed(3) }
+          : null,
+      })
+    )
+  } catch {}
+}
+function floorPointFromEvent(e) {
+  ptr.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1)
+  ray.setFromCamera(ptr, camera)
+  if (!ray.ray.intersectPlane(_floorPlane, _floorPt)) return null
+  return _floorPt
+}
+function beginFloorDrag(obj, e) {
+  if (!obj || waterAnimT > 0.05) return
+  floorDrag = obj
+  floorDragMoved = false
+  try {
+    cv.setPointerCapture(e.pointerId)
+  } catch {}
+  sfxClick()
+}
+function updateFloorDrag(e) {
+  if (!floorDrag) return
+  const p = floorPointFromEvent(e)
+  if (!p) return
+  // drž v rohu pri okne
+  const x = Math.max(-2.45, Math.min(-1.35, p.x))
+  const z = Math.max(0.85, Math.min(2.35, p.z))
+  const dx = x - floorDrag.position.x,
+    dz = z - floorDrag.position.z
+  if (Math.hypot(dx, dz) > 0.008) floorDragMoved = true
+  floorDrag.position.x = x
+  floorDrag.position.z = z
+  floorDrag.position.y = 0
+}
+function endFloorDrag() {
+  if (!floorDrag) return
+  const obj = floorDrag
+  const moved = floorDragMoved
+  floorDrag = null
+  floorDragMoved = false
+  if (obj === waterCanG) {
+    savePlantState()
+    // blízko rastliny → zaliať
+    if (plantG && obj.position.distanceTo(plantG.position) < 0.55) startWaterPlant()
+    else if (!moved) startWaterPlant()
+  }
+}
+const BOOK_DESK_POS = new THREE.Vector3(-1.05, DESK_TOP, 0.22)
+const _bookStartP = new THREE.Vector3(),
+  _bookEndP = new THREE.Vector3(),
+  _bookStartQ = new THREE.Quaternion(),
+  _bookEndQ = new THREE.Quaternion(),
+  _bookEaseQ = new THREE.Quaternion()
+function pickShelfBook(e) {
+  if (!shelfG) return null
+  const hit = pick(e, shelfG)
+  if (!hit) {
+    if (deskBook && pick(e, deskBook)) return deskBook
+    return null
+  }
+  let o = hit.object
+  while (o && o !== shelfG) {
+    if (o.userData?.isBook) return o
+    o = o.parent
+  }
+  if (deskBook && pick(e, deskBook)) return deskBook
+  return null
+}
+function easeInOutCubic(u) {
+  return u < 0.5 ? 4 * u * u * u : 1 - (-2 * u + 2) ** 3 / 2
+}
+function beginBookAnim(book, mode) {
+  if (!book || bookAnim) return
+  book.updateWorldMatrix(true, false)
+  _bookStartP.setFromMatrixPosition(book.matrixWorld)
+  _bookStartQ.setFromRotationMatrix(book.matrixWorld)
+  if (book.parent) book.parent.remove(book)
+  scene.add(book)
+  book.position.copy(_bookStartP)
+  book.quaternion.copy(_bookStartQ)
+  book.rotation.set(0, 0, 0)
+  book.quaternion.copy(_bookStartQ)
+
+  if (mode === 'toDesk') {
+    if (deskBook && deskBook !== book) {
+      // predchádzajúcu vráť hneď na poličku (bez fronty)
+      const prev = deskBook
+      deskBook = null
+      prev.userData.onDesk = false
+      if (prev.parent) prev.parent.remove(prev)
+      shelfG.add(prev)
+      prev.position.copy(prev.userData.shelfPos)
+      prev.rotation.set(0, 0, prev.userData.shelfRotZ)
+    }
+    const h = book.userData.bookH || 0.25
+    _bookEndP.set(BOOK_DESK_POS.x, DESK_TOP + h / 2 + 0.002, BOOK_DESK_POS.z)
+    _bookEndQ.setFromEuler(new THREE.Euler(-0.08, -1.05, 0.04))
+    deskBook = book
+    book.userData.onDesk = true
+  } else {
+    // späť na poličku — cieľ vo world space
+    const dummy = new THREE.Object3D()
+    shelfG.add(dummy)
+    dummy.position.copy(book.userData.shelfPos)
+    dummy.rotation.z = book.userData.shelfRotZ
+    shelfG.updateWorldMatrix(true, true)
+    dummy.updateWorldMatrix(true, false)
+    _bookEndP.setFromMatrixPosition(dummy.matrixWorld)
+    _bookEndQ.setFromRotationMatrix(dummy.matrixWorld)
+    shelfG.remove(dummy)
+    book.userData.onDesk = false
+    if (deskBook === book) deskBook = null
+  }
+  bookAnim = {
+    book,
+    mode,
+    t: 0,
+    dur: Anim.reduceMotion ? 0.35 : 0.95 * Anim.camSmooth,
+    startP: _bookStartP.clone(),
+    endP: _bookEndP.clone(),
+    startQ: _bookStartQ.clone(),
+    endQ: _bookEndQ.clone(),
+  }
+  sfxClick()
+}
+function toggleBook(book) {
+  if (!book?.userData?.isBook || bookAnim) return
+  if (book.userData.onDesk) beginBookAnim(book, 'toShelf')
+  else beginBookAnim(book, 'toDesk')
+}
+function updateBookAnim(dt) {
+  if (!bookAnim) return
+  const a = bookAnim
+  a.t += dt / a.dur
+  const u = Math.min(1, a.t),
+    e = easeInOutCubic(u)
+  // vyšší, mäkší oblúk prenášania
+  const lift = Math.sin(u * Math.PI) * (Anim.reduceMotion ? 0.12 : 0.42)
+  a.book.position.lerpVectors(a.startP, a.endP, e)
+  a.book.position.y += lift
+  _bookEaseQ.slerpQuaternions(a.startQ, a.endQ, e)
+  a.book.quaternion.copy(_bookEaseQ)
+  if (u >= 1) {
+    a.book.position.copy(a.endP)
+    a.book.quaternion.copy(a.endQ)
+    if (a.mode === 'toShelf') {
+      scene.remove(a.book)
+      shelfG.add(a.book)
+      a.book.position.copy(a.book.userData.shelfPos)
+      a.book.rotation.set(0, 0, a.book.userData.shelfRotZ)
+    }
+    bookAnim = null
+  }
+}
+function startWaterPlant(which = 'floor') {
+  if (waterAnimT > 0.05 || floorDrag) return
+  waterTarget = which === 'sill' ? 'sill' : 'floor'
   waterAnimT = 1.65
+  if (waterTarget === 'sill') {
+    sillWetT = 8
+    const before = sillGrowthTgt
+    sillGrowthTgt = Math.min(1, sillGrowthTgt + (Anim.reduceMotion ? 0.24 : 0.18))
+    savePlantState()
+    sfxWater()
+    sfxClick()
+    const h = $('hint')
+    if (h && !h.textContent.startsWith('Chyba')) {
+      const pct = Math.round(sillGrowthTgt * 100)
+      const msg =
+        sillGrowthTgt >= 0.99 && before < 0.99
+          ? 'Parapetná kvetina dorástla!'
+          : `Zalievam parapet… ${pct}%`
+      h.textContent = msg
+      setTimeout(() => {
+        if ($('hint')?.textContent === msg) syncHint()
+      }, 1800)
+    }
+    return
+  }
   waterWetT = 8
+  const before = plantGrowthTgt
+  plantGrowthTgt = Math.min(1, plantGrowthTgt + (Anim.reduceMotion ? 0.22 : 0.16))
+  savePlantState()
   if (waterDrops) waterDrops.visible = true
   sfxWater()
   sfxClick()
   const h = $('hint')
   if (h && !h.textContent.startsWith('Chyba')) {
-    const prev = h.textContent
-    h.textContent = 'Zalievam kvetinu…'
+    const pct = Math.round(plantGrowthTgt * 100)
+    const msg =
+      plantGrowthTgt >= 0.99 && before < 0.99
+        ? 'Kvetina dorástla!'
+        : `Zalievam… rast ${pct}%`
+    h.textContent = msg
     setTimeout(() => {
-      if ($('hint')?.textContent === 'Zalievam kvetinu…') syncHint()
-      else if ($('hint') && prev) {
-        /* keep */
-      }
-    }, 1600)
+      if ($('hint')?.textContent === msg) syncHint()
+    }, 1800)
   }
+}
+function applySillGrowthVisual(g) {
+  const grow = Math.max(0.15, Math.min(1, g))
+  const e = 1 - Math.pow(1 - grow, 1.5)
+  sillLeaves.forEach((blade, i) => {
+    if (!blade?.userData) return
+    const bh = blade.userData.baseH || 0.22
+    const stagger = Math.max(0, Math.min(1, (e - i * 0.05) / 0.85))
+    const s = 0.35 + stagger * 0.65
+    blade.scale.set(1, s, 1)
+    blade.position.y = 0.08 + (bh * s) / 2
+  })
 }
 function sfxWater() {
   if (!A.ctx || !A.on) return
@@ -1176,7 +1494,40 @@ function sfxWater() {
   }
   burst('lowpass', 600, 0.08, 0.35)
 }
+function applyPlantGrowthVisual(g) {
+  const grow = Math.max(0.12, Math.min(1, g))
+  // easeOut for nicer “pop”
+  const e = 1 - Math.pow(1 - grow, 1.65)
+  if (plantStem) {
+    plantStem.scale.set(0.7 + e * 0.35, 0.35 + e * 0.65, 0.7 + e * 0.35)
+    plantStem.position.y = 0.22 + e * 0.28
+  }
+  plantLeaves.forEach((lf, i) => {
+    if (!lf?.userData) return
+    const bs = lf.userData.baseScale || { x: 1, y: 1, z: 1 }
+    const stagger = Math.max(0, Math.min(1, (e - i * 0.04) / 0.85))
+    const s = 0.25 + stagger * 0.75
+    lf.scale.set(bs.x * s, bs.y * s, bs.z * s)
+    const base = lf.userData.baseY ?? lf.position.y
+    lf.userData.growY = base * (0.45 + e * 0.55)
+  })
+}
 function updateWaterPlant(dt, t) {
+  // plynulý rast smerom k cieľu
+  plantGrowth += (plantGrowthTgt - plantGrowth) * Math.min(1, dt * (Anim.reduceMotion ? 2.2 : 1.1))
+  applyPlantGrowthVisual(plantGrowth)
+  sillGrowth += (sillGrowthTgt - sillGrowth) * Math.min(1, dt * (Anim.reduceMotion ? 2.4 : 1.2))
+  applySillGrowthVisual(sillGrowth)
+  if (sillWetT > 0) sillWetT -= dt
+  // jemné kývanie listov na parapete
+  if (sillLeaves.length) {
+    const ex = Math.max(0, sillWetT / 8)
+    sillLeaves.forEach((blade, i) => {
+      const ph = i * 0.7
+      blade.rotation.z = (blade.userData.baseRotZ || 0) + Math.sin(t * 3 + ph) * 0.12 * ex
+    })
+  }
+
   if (plantSoil?.material) {
     const w = Math.max(0, Math.min(1, waterWetT / 8))
     plantSoil.material.color.setRGB(
@@ -1186,20 +1537,24 @@ function updateWaterPlant(dt, t) {
     )
     if (waterWetT > 0) waterWetT -= dt
   }
-  // listový bounce pri / po zálievke
+  // listový bounce pri / po zálievke + jemné dýchanie podľa rastu
   const excite = waterAnimT > 0 ? Math.min(1, waterAnimT) : Math.max(0, waterWetT / 8) * 0.35
+  const breath = 0.004 + plantGrowth * 0.006
   plantLeaves.forEach((lf) => {
     if (!lf?.userData) return
     const ph = lf.userData.phase || 0
-    const base = lf.userData.baseY ?? lf.position.y
-    lf.position.y = base + Math.sin(t * (5 + ph) + ph) * 0.012 * excite
+    const base = lf.userData.growY ?? lf.userData.baseY ?? lf.position.y
+    lf.position.y = base + Math.sin(t * (5 + ph) + ph) * 0.012 * excite + Math.sin(t * 1.2 + ph) * breath
     lf.rotation.z = Math.sin(t * 3.2 + ph) * 0.08 * excite
     lf.rotation.x = Math.cos(t * 2.6 + ph) * 0.05 * excite
   })
 
   if (!waterCanG) return
   if (waterAnimT <= 0) {
-    waterCanG.rotation.z += (0 - waterCanG.rotation.z) * Math.min(1, dt * 6)
+    if (!floorDrag) {
+      waterCanG.rotation.z += (0 - waterCanG.rotation.z) * Math.min(1, dt * 6)
+      waterCanG.position.y += (0 - waterCanG.position.y) * Math.min(1, dt * 8)
+    }
     if (waterDrops) waterDrops.visible = false
     return
   }
@@ -1210,21 +1565,22 @@ function updateWaterPlant(dt, t) {
   waterCanG.rotation.z = -0.55 * pour
   waterCanG.position.y = 0.02 * pour
 
-  // spawn / update kvapiek
+  // spawn / update kvapiek — zo spoutu krhly (aj po posune)
   if (waterDropData.length && waterDrops) {
-    const spout = new THREE.Vector3(-1.78, 0.2 + 0.06 * pour, 1.68)
+    const spoutLocal = new THREE.Vector3(0.1, 0.14, 0)
+    waterCanG.localToWorld(spoutLocal)
     const attr = waterDrops.geometry.attributes.position
     const pouring = u > 0.12 && u < 0.78
     if (pouring && Math.random() < 0.55) {
       const d = waterDropData.find((x) => !x.alive) || waterDropData[(Math.random() * waterDropData.length) | 0]
       d.alive = true
       d.life = 0.55 + Math.random() * 0.35
-      d.x = spout.x + (Math.random() - 0.5) * 0.04
-      d.y = spout.y
-      d.z = spout.z + (Math.random() - 0.5) * 0.04
-      d.vx = -0.15 - Math.random() * 0.12
+      d.x = spoutLocal.x + (Math.random() - 0.5) * 0.04
+      d.y = spoutLocal.y
+      d.z = spoutLocal.z + (Math.random() - 0.5) * 0.04
+      d.vx = -0.12 - Math.random() * 0.1
       d.vy = 0.05 + Math.random() * 0.08
-      d.vz = -0.05 + (Math.random() - 0.5) * 0.08
+      d.vz = (Math.random() - 0.5) * 0.1
     }
     waterDropData.forEach((d, i) => {
       if (!d.alive) {
@@ -1236,7 +1592,7 @@ function updateWaterPlant(dt, t) {
       d.x += d.vx * dt
       d.y += d.vy * dt
       d.z += d.vz * dt
-      if (d.life <= 0 || d.y < 0.22) d.alive = false
+      if (d.life <= 0 || d.y < 0.02) d.alive = false
       attr.setXYZ(i, d.x, d.y, d.z)
     })
     attr.needsUpdate = true
@@ -1247,11 +1603,9 @@ function buildRoomExtras() {
   const woodDark = M(0x5c4030, 0.72, 0.04)
   const woodMid = M(0x7a5538, 0.68, 0.03)
   const metal = M(0x2a2a30, 0.4, 0.55)
-  const fabric = M(0x3d4f45, 0.9, 0.02)
   const leaf = M(0x2f7a48, 0.78, 0.02)
   const leaf2 = M(0x1f5c36, 0.82, 0.01)
   const ceramic = M(0xd9cfc2, 0.55, 0.05)
-  const paper = M(0xe8e0d2, 0.88, 0.01)
 
   // koberec pod stolom
   const rugTex = ctex(256, 256, (c, w, h) => {
@@ -1281,7 +1635,7 @@ function buildRoomExtras() {
   plantSoil = cyl(plantG, 0.09, 0.06, M(0x4a3424, 0.9), 0, 0.2, 0)
   plantSoil.userData.dryColor = 0x4a3424
   plantSoil.userData.wetColor = 0x2a1a10
-  const stem = cyl(plantG, 0.012, 0.55, M(0x3a5a2a, 0.7), 0, 0.5, 0)
+  plantStem = cyl(plantG, 0.012, 0.55, M(0x3a5a2a, 0.7), 0, 0.5, 0)
   plantLeaves = []
   for (let i = 0; i < 7; i++) {
     const ang = (i / 7) * Math.PI * 2
@@ -1291,6 +1645,7 @@ function buildRoomExtras() {
     fr.castShadow = true
     fr.userData.baseY = fr.position.y
     fr.userData.phase = i * 0.9
+    fr.userData.baseScale = { x: 1.4, y: 0.55, z: 0.9 }
     plantG.add(fr)
     plantLeaves.push(fr)
   }
@@ -1300,9 +1655,10 @@ function buildRoomExtras() {
   top.castShadow = true
   top.userData.baseY = 0.92
   top.userData.phase = 0.2
+  top.userData.baseScale = { x: 1.1, y: 0.7, z: 1.1 }
   plantG.add(top)
   plantLeaves.push(top)
-  stem.castShadow = true
+  plantStem.castShadow = true
   // hitbox na klik
   const plantHit = new THREE.Mesh(
     new THREE.CylinderGeometry(0.28, 0.22, 1.15, 12),
@@ -1312,11 +1668,12 @@ function buildRoomExtras() {
   plantHit.name = 'plantHit'
   plantG.add(plantHit)
 
-  // krhla vedľa rastliny
+  // krhla vedľa rastliny — ťahateľná myšou
   waterCanG = new THREE.Group()
   waterCanG.position.set(-1.85, 0, 1.72)
   waterCanG.rotation.y = 0.55
   scene.add(waterCanG)
+  waterCanHome = waterCanG.position.clone()
   const canBody = M(0x3a7a9a, 0.45, 0.15)
   cyl(waterCanG, 0.055, 0.12, canBody, 0, 0.08, 0, 0.06)
   box(waterCanG, 0.08, 0.01, 0.08, canBody, 0, 0.145, 0)
@@ -1331,6 +1688,9 @@ function buildRoomExtras() {
   handle.position.set(-0.02, 0.12, 0)
   waterCanG.add(handle)
   waterCanG.userData.baseRotZ = 0
+  waterCanG.userData.draggable = true
+  loadPlantState()
+  applyPlantGrowthVisual(plantGrowth)
 
   // kvapky vody (points)
   {
@@ -1363,45 +1723,73 @@ function buildRoomExtras() {
     }))
   }
 
-  // menšia rastlina na parapete
-  const sill = new THREE.Group()
-  sill.position.set(-2.42, 0.72, 0.15)
-  scene.add(sill)
-  cyl(sill, 0.055, 0.08, M(0xb85c38, 0.55), 0, 0.04, 0, 0.06)
+  // menšia rastlina na parapete — klik = zaliať + rast
+  sillPlantG = new THREE.Group()
+  sillPlantG.position.set(-2.42, 0.72, 0.15)
+  sillPlantG.name = 'sillPlant'
+  scene.add(sillPlantG)
+  cyl(sillPlantG, 0.055, 0.08, M(0xb85c38, 0.55), 0, 0.04, 0, 0.06)
+  sillLeaves = []
   for (let i = 0; i < 5; i++) {
-    const blade = box(sill, 0.012, 0.22, 0.004, leaf2, (i - 2) * 0.02, 0.16, 0)
+    const blade = box(sillPlantG, 0.012, 0.22, 0.004, leaf2, (i - 2) * 0.02, 0.16, 0)
     blade.rotation.z = (i - 2) * 0.18
     blade.rotation.x = 0.15
+    blade.userData.baseH = 0.22
+    blade.userData.baseRotZ = blade.rotation.z
+    sillLeaves.push(blade)
   }
+  const sillHit = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.12, 0.1, 0.4, 10),
+    new THREE.MeshBasicMaterial({ visible: false })
+  )
+  sillHit.position.y = 0.18
+  sillHit.name = 'sillPlantHit'
+  sillPlantG.add(sillHit)
+  applySillGrowthVisual(sillGrowth)
 
-  // knižnica pri pravej stene
-  const shelf = new THREE.Group()
-  shelf.position.set(3.45, 0, 1.4)
-  shelf.rotation.y = -Math.PI / 2
-  scene.add(shelf)
-  box(shelf, 0.9, 0.04, 0.32, woodDark, 0, 0.04, 0)
-  box(shelf, 0.9, 0.04, 0.32, woodDark, 0, 0.72, 0)
-  box(shelf, 0.9, 0.04, 0.32, woodDark, 0, 1.4, 0)
-  box(shelf, 0.9, 0.04, 0.32, woodDark, 0, 2.05, 0)
-  box(shelf, 0.04, 2.05, 0.32, woodDark, -0.43, 1.025, 0)
-  box(shelf, 0.04, 2.05, 0.32, woodDark, 0.43, 1.025, 0)
-  box(shelf, 0.9, 2.05, 0.03, woodMid, 0, 1.025, -0.15)
+  // knižnica pri pravej stene (knihy sa dajú kliknúť → na stôl)
+  shelfG = new THREE.Group()
+  shelfG.position.set(3.45, 0, 1.4)
+  shelfG.rotation.y = -Math.PI / 2
+  scene.add(shelfG)
+  box(shelfG, 0.9, 0.04, 0.32, woodDark, 0, 0.04, 0)
+  box(shelfG, 0.9, 0.04, 0.32, woodDark, 0, 0.72, 0)
+  box(shelfG, 0.9, 0.04, 0.32, woodDark, 0, 1.4, 0)
+  box(shelfG, 0.9, 0.04, 0.32, woodDark, 0, 2.05, 0)
+  box(shelfG, 0.04, 2.05, 0.32, woodDark, -0.43, 1.025, 0)
+  box(shelfG, 0.04, 2.05, 0.32, woodDark, 0.43, 1.025, 0)
+  box(shelfG, 0.9, 2.05, 0.03, woodMid, 0, 1.025, -0.15)
   const bookCols = [0x2c4a6e, 0x6b2e2e, 0x2e5a3a, 0x5a3d6b, 0xc4a35a, 0x1f1f24, 0x3a6f8a, 0x8a4a2a]
+  shelfBooks = []
   for (let row = 0; row < 3; row++) {
     let x = -0.34
     for (let i = 0; i < 8; i++) {
       const w = 0.05 + (i % 3) * 0.012
       const h = 0.22 + (i % 4) * 0.03
       const d = 0.18 + (i % 2) * 0.04
-      const b = box(shelf, w, h, d, M(bookCols[(row * 3 + i) % bookCols.length], 0.7), x + w / 2, 0.08 + row * 0.68 + h / 2, 0.02)
-      b.rotation.z = ((i % 5) - 2) * 0.01
+      const lx = x + w / 2,
+        ly = 0.08 + row * 0.68 + h / 2,
+        lz = 0.02,
+        rz = ((i % 5) - 2) * 0.01
+      const b = box(shelfG, w, h, d, M(bookCols[(row * 3 + i) % bookCols.length], 0.7), lx, ly, lz)
+      b.rotation.z = rz
+      b.userData = {
+        isBook: true,
+        bookH: h,
+        bookW: w,
+        bookD: d,
+        shelfPos: new THREE.Vector3(lx, ly, lz),
+        shelfRotZ: rz,
+        onDesk: false,
+      }
+      shelfBooks.push(b)
       x += w + 0.008
     }
   }
   // dekor na hornej polici
-  cyl(shelf, 0.05, 0.12, ceramic, -0.22, 2.12, 0.02)
-  box(shelf, 0.14, 0.02, 0.1, M(0x222228, 0.5), 0.2, 2.08, 0.02)
-  box(shelf, 0.12, 0.08, 0.02, M(0xe8e4dc, 0.6), 0.2, 2.13, 0.06)
+  cyl(shelfG, 0.05, 0.12, ceramic, -0.22, 2.12, 0.02)
+  box(shelfG, 0.14, 0.02, 0.1, M(0x222228, 0.5), 0.2, 2.08, 0.02)
+  box(shelfG, 0.12, 0.08, 0.02, M(0xe8e4dc, 0.6), 0.2, 2.13, 0.06)
 
   // stojacia lampa v rohu
   const lamp = new THREE.Group()
@@ -1419,52 +1807,6 @@ function buildRoomExtras() {
   const bulb = new THREE.PointLight(0xffd9a8, 0.35, 4.5, 2)
   bulb.position.set(0, 1.55, 0)
   lamp.add(bulb)
-
-  // bočný stolík + kniha + slúchadlá
-  const side = new THREE.Group()
-  side.position.set(1.55, 0, 1.35)
-  scene.add(side)
-  cyl(side, 0.22, 0.04, woodMid, 0, 0.48, 0)
-  cyl(side, 0.03, 0.48, woodDark, 0, 0.24, 0)
-  cyl(side, 0.16, 0.03, woodDark, 0, 0.02, 0)
-  box(side, 0.14, 0.02, 0.1, M(0x3a5080, 0.65), 0.02, 0.51, 0.02)
-  box(side, 0.12, 0.018, 0.09, M(0x804030, 0.65), -0.02, 0.53, -0.02)
-  // slúchadlá
-  const hp = new THREE.Group()
-  hp.position.set(-0.08, 0.56, 0.05)
-  hp.rotation.y = 0.4
-  side.add(hp)
-  const band = new THREE.Mesh(
-    new THREE.TorusGeometry(0.07, 0.008, 8, 20, Math.PI),
-    metal
-  )
-  band.rotation.z = Math.PI / 2
-  band.position.y = 0.02
-  hp.add(band)
-  for (const sx of [-1, 1]) {
-    const cup = cyl(hp, 0.035, 0.04, M(0x1a1a1e, 0.45, 0.2), sx * 0.07, -0.02, 0)
-    cup.rotation.z = Math.PI / 2
-  }
-
-  // batoh pri stoličke
-  const bag = new THREE.Group()
-  bag.position.set(0.55, 0, 1.35)
-  bag.rotation.y = -0.5
-  scene.add(bag)
-  box(bag, 0.28, 0.38, 0.16, fabric, 0, 0.22, 0)
-  box(bag, 0.22, 0.12, 0.04, M(0x2a3830, 0.85), 0, 0.32, 0.1)
-  box(bag, 0.04, 0.28, 0.02, metal, -0.1, 0.35, -0.02)
-  box(bag, 0.04, 0.28, 0.02, metal, 0.1, 0.35, -0.02)
-
-  // topánky
-  const shoeMat = M(0x1c1c22, 0.55, 0.08)
-  for (const [sx, syaw] of [
-    [-0.35, 0.2],
-    [-0.22, -0.15],
-  ]) {
-    const sh = box(scene, 0.1, 0.06, 0.26, shoeMat, sx, 0.03, 1.55)
-    sh.rotation.y = syaw
-  }
 
   // plagát na pravej stene (odstup od steny → bez z-fightingu)
   const poster = ctex(512, 720, (c, w, h) => {
@@ -1518,34 +1860,14 @@ function buildRoomExtras() {
   scene.add(posterM)
   frame.receiveShadow = true
 
-  // kalendár na zadnej stene
-  const cal = ctex(256, 280, (c, w, h) => {
-    c.fillStyle = '#f4f0e8'
-    c.fillRect(0, 0, w, h)
-    c.fillStyle = '#c45c3a'
-    c.fillRect(0, 0, w, 48)
-    c.fillStyle = '#fff'
-    c.font = 'bold 28px sans-serif'
-    c.fillText('NOV', 95, 34)
-    c.fillStyle = '#333'
-    c.font = 'bold 72px sans-serif'
-    c.fillText('22', 85, 150)
-    c.font = '18px sans-serif'
-    c.fillText('nedeľa', 95, 190)
-    c.strokeStyle = '#ddd'
-    for (let i = 0; i < 5; i++) c.strokeRect(30 + (i % 5) * 40, 210, 32, 32)
-  })
-  const calM = new THREE.Mesh(
-    new THREE.PlaneGeometry(0.28, 0.32),
-    new THREE.MeshStandardMaterial({ map: cal, roughness: 0.85 })
-  )
-  calM.position.set(2.35, 1.85, -0.58)
-  scene.add(calM)
+  // kalendár na zadnej stene (skutočný dátum)
+  buildWallCalendar()
 
   // reproduktor / bluetooth box na stole-rohu
   const spk = new THREE.Group()
   spk.position.set(-1.15, DESK_TOP, -0.15)
   scene.add(spk)
+  roomSpeakerG = spk
   box(spk, 0.12, 0.16, 0.1, M(0x1a1a1c, 0.45, 0.15), 0, 0.08, 0)
   cyl(spk, 0.035, 0.01, M(0x333338, 0.4), 0, 0.1, 0.052).rotation.x = Math.PI / 2
   const led = new THREE.Mesh(
@@ -1570,23 +1892,6 @@ function buildRoomExtras() {
   curtain.rotation.y = Math.PI / 2
   scene.add(curtain)
   box(scene, 0.02, 0.02, 0.6, metal, -2.52, 2.58, 1.95)
-
-  // kartónová krabica / sklad pod poličkou
-  const boxG = new THREE.Group()
-  boxG.position.set(3.2, 0, 0.55)
-  boxG.rotation.y = 0.2
-  scene.add(boxG)
-  box(boxG, 0.35, 0.28, 0.28, M(0xc4a574, 0.85), 0, 0.14, 0)
-  box(boxG, 0.36, 0.02, 0.29, M(0xb89560, 0.8), 0, 0.29, 0)
-
-  // stoh kníh na podlahe
-  const stack = new THREE.Group()
-  stack.position.set(2.7, 0, 2.1)
-  stack.rotation.y = 0.35
-  scene.add(stack)
-  ;[0x2a4060, 0x704030, 0x406050].forEach((col, i) => {
-    box(stack, 0.22, 0.035, 0.16, M(col, 0.7), 0, 0.02 + i * 0.038, 0)
-  })
 }
 
 /* 09-kos-pod-stol-zahodenie-listkov-viko.js */
@@ -2047,9 +2352,102 @@ let dellScreen
 let laptopG
 let laptopLid
 let laptopScr
+let laptopTex
+let laptopBlank
 let extG
 const PWR = { aoc: true, dell: true, mac: true }
-let macLidAng = -0.35
+let macOpen = true
+let macLidAng = -0.38
+const MAC_LID_OPEN = -0.38
+const MAC_LID_CLOSED = -1.52
+const MAC_TERM_LS = 'deskstudy-mac-term-v1'
+const MAC_TERM_DEFAULT = `$ git push
+Enumerating objects: 21, done.
+Writing objects: 100% (12/12)
+To github.com:peterdinis511/spst-kniznica.git
+   main -> main
+$ `
+function loadMacTerm() {
+  try {
+    const r = localStorage.getItem(MAC_TERM_LS)
+    return typeof r === 'string' ? r : MAC_TERM_DEFAULT
+  } catch {
+    return MAC_TERM_DEFAULT
+  }
+}
+function saveMacTerm(text) {
+  try {
+    localStorage.setItem(MAC_TERM_LS, text)
+  } catch {}
+}
+function drawMacScreen(c, w, h, termText) {
+  c.fillStyle = '#181818'
+  c.fillRect(0, 0, w, h)
+  c.fillStyle = '#252526'
+  c.fillRect(0, 0, w, 28)
+  ;[
+    'Slabé miesta analýza',
+    'Application load tes…',
+    'auth-nav-cluster.stories.tsx',
+    'stop-all.sh',
+    'admin/books/status-actions',
+  ].forEach((s, i) => txt(c, s, 10 + i * 190, 19, i === 3 ? '#fff' : '#999', '12px sans-serif'))
+  c.fillStyle = '#1e1e1e'
+  c.fillRect(0, 28, 300, h - 28)
+  txt(c, 'Zistil som problém s load-test', 10, 70, '#ddd', '13px sans-serif')
+  for (let i = 0; i < 5; i++) {
+    c.fillStyle = '#2d2d30'
+    c.fillRect(10, 110 + i * 50, 270, 40)
+    txt(c, `./scripts/load-test.sh  ${i + 1}`, 18, 135 + i * 50, '#9cdcfe', '12px monospace')
+  }
+  const code = [
+    '#!/bin/bash',
+    'set -eo pipefail',
+    'ROOT="$(cd "$(dirname "$0")/.." && pwd)"',
+    'echo "==> Stopping SPST processes..."',
+    'if [[ -d "$ROOT/.pids" ]]; then',
+    '  for pidfile in "$ROOT"/.pids/*.pid; do',
+    '    kill "$pid" 2>/dev/null || true',
+    '  done',
+    'fi',
+    'for port in 3000 3001 3002 8080; do',
+    '  lsof -ti:$port | xargs kill -9',
+    'done',
+  ]
+  code.forEach((s, i) =>
+    txt(c, s, 320, 60 + i * 20, ['#6a9955', '#c586c0', '#ce9178', '#9cdcfe'][i % 4], '13px monospace')
+  )
+  c.fillStyle = '#1e1e1e'
+  c.fillRect(840, 28, 184, h - 28)
+  ;[
+    '.github',
+    '.pids',
+    'load',
+    'node_modules',
+    'scripts',
+    'src',
+    'web',
+    '.env',
+    'docker-compose.yml',
+    'start.sh',
+    'stop.sh',
+  ].forEach((s, i) => txt(c, s, 852, 60 + i * 20, '#ccc', '12px sans-serif'))
+  c.fillStyle = '#0c0c0c'
+  c.fillRect(300, 380, 540, h - 380)
+  const lines = String(termText || '')
+    .replace(/\r\n/g, '\n')
+    .split('\n')
+    .slice(-12)
+  lines.forEach((s, i) => {
+    const col = s.startsWith('$') ? '#4ec9b0' : s.startsWith('==>') || s.startsWith('To ') ? '#ce9178' : '#d4d4d4'
+    txt(c, s.slice(0, 62), 312, 404 + i * 20, col, '12px monospace')
+  })
+}
+function refreshMacScreen(termText = loadMacTerm()) {
+  if (!laptopTex?.image) return
+  drawMacScreen(laptopTex.image.getContext('2d'), laptopTex.image.width, laptopTex.image.height, termText)
+  laptopTex.needsUpdate = true
+}
 function refreshAocContent() {
   if (!PWR.aoc) return
   if (!ghBig || !hudPlane || !nestedPlane) return
@@ -2077,6 +2475,11 @@ function applyDevicePower(skipSave = false) {
     zoom = null
     returning = 90
   }
+  if ((!PWR.mac || !macOpen) && zoom === 'mac') {
+    zoom = null
+    returning = 90
+    closeMacDialog()
+  }
   setSw('bPwrAoc', PWR.aoc)
   setSw('bPwrDell', PWR.dell)
   setSw('bPwrMac', PWR.mac)
@@ -2087,13 +2490,34 @@ function togglePwr(which) {
   applyDevicePower()
   sfxClick()
 }
+function setMacOpen(on, { quiet = false, skipSave = false } = {}) {
+  macOpen = !!on
+  setSw('bMacLid', macOpen)
+  if (!macOpen) {
+    if (zoom === 'mac') {
+      zoom = null
+      returning = 90
+      syncHint()
+    }
+    closeMacDialog()
+  }
+  if (!skipSave) savePrefs()
+  if (!quiet) sfxClick()
+}
+function toggleMacLid() {
+  setMacOpen(!macOpen)
+}
 function applyMacLid(dt) {
-  const tgt = PWR.mac ? -0.35 : -0.04
-  macLidAng += (tgt - macLidAng) * (1 - 0.02 ** dt)
+  const tgt = macOpen ? MAC_LID_OPEN : MAC_LID_CLOSED
+  // spring-ish: rýchlejší začiatok, mäkký dojazd (ovplyvnené lidSmooth)
+  const ease = Anim.reduceMotion ? 0.12 : Math.pow(0.00015, dt / Math.max(0.4, Anim.lidSmooth))
+  macLidAng += (tgt - macLidAng) * (1 - ease)
+  if (Math.abs(tgt - macLidAng) < 0.001) macLidAng = tgt
   if (laptopLid) laptopLid.rotation.x = macLidAng
-  if (laptopScr) laptopScr.visible = PWR.mac && macLidAng < -0.18
-  if (cursor)
-    cursor.visible = PWR.mac && laptopScr?.visible && Math.floor(performance.now() / 500) % 2 === 0
+  const scrOn = PWR.mac && macOpen && macLidAng > MAC_LID_CLOSED + 0.25
+  if (laptopScr) laptopScr.visible = scrOn
+  if (laptopBlank) laptopBlank.visible = !PWR.mac && macOpen && macLidAng > MAC_LID_CLOSED + 0.25
+  if (cursor) cursor.visible = scrOn && Math.floor(performance.now() / 480) % 2 === 0
 }
 function buildScreens(rtTex, hudTex) {
   const black = M(0x0c0c0e, 0.38, 0.15)
@@ -2431,85 +2855,18 @@ function buildLaptop() {
   box(lid, 0.012, 0.006, 0.002, M(0x111114, 0.4), 0, 0.24, 0.004)
   cyl(lid, 0.0022, 0.001, M(0x222228, 0.3), 0, 0.24, 0.005).rotation.x = Math.PI / 2
 
-  const sc = new THREE.Mesh(
-    new THREE.PlaneGeometry(0.355, 0.225),
-    screenMat(
-      ctex(1024, 660, (c, w, h) => {
-        c.fillStyle = '#181818'
-        c.fillRect(0, 0, w, h)
-        c.fillStyle = '#252526'
-        c.fillRect(0, 0, w, 28)
-        ;[
-          'Slabé miesta analýza',
-          'Application load tes…',
-          'auth-nav-cluster.stories.tsx',
-          'stop-all.sh',
-          'admin/books/status-actions',
-        ].forEach((s, i) =>
-          txt(c, s, 10 + i * 190, 19, i === 3 ? '#fff' : '#999', '12px sans-serif')
-        )
-        c.fillStyle = '#1e1e1e'
-        c.fillRect(0, 28, 300, h - 28)
-        txt(c, 'Zistil som problém s load-test', 10, 70, '#ddd', '13px sans-serif')
-        for (let i = 0; i < 5; i++) {
-          c.fillStyle = '#2d2d30'
-          c.fillRect(10, 110 + i * 50, 270, 40)
-          txt(c, `./scripts/load-test.sh  ${i + 1}`, 18, 135 + i * 50, '#9cdcfe', '12px monospace')
-        }
-        const code = [
-          '#!/bin/bash',
-          'set -eo pipefail',
-          'ROOT="$(cd "$(dirname "$0")/.." && pwd)"',
-          'echo "==> Stopping SPST processes..."',
-          'if [[ -d "$ROOT/.pids" ]]; then',
-          '  for pidfile in "$ROOT"/.pids/*.pid; do',
-          '    kill "$pid" 2>/dev/null || true',
-          '  done',
-          'fi',
-          'for port in 3000 3001 3002 8080; do',
-          '  lsof -ti:$port | xargs kill -9',
-          'done',
-        ]
-        code.forEach((s, i) =>
-          txt(
-            c,
-            s,
-            320,
-            60 + i * 20,
-            ['#6a9955', '#c586c0', '#ce9178', '#9cdcfe'][i % 4],
-            '13px monospace'
-          )
-        )
-        c.fillStyle = '#1e1e1e'
-        c.fillRect(840, 28, 184, h - 28)
-        ;[
-          '.github',
-          '.pids',
-          'load',
-          'node_modules',
-          'scripts',
-          'src',
-          'web',
-          '.env',
-          'docker-compose.yml',
-          'start.sh',
-          'stop.sh',
-        ].forEach((s, i) => txt(c, s, 852, 60 + i * 20, '#ccc', '12px sans-serif'))
-        c.fillStyle = '#0c0c0c'
-        c.fillRect(300, 380, 540, h - 380)
-        ;[
-          '$ git push',
-          'Enumerating objects: 21, done.',
-          'Writing objects: 100% (12/12)',
-          'To github.com:peterdinis511/spst-kniznica.git',
-          '   main -> main',
-        ].forEach((s, i) => txt(c, s, 312, 404 + i * 20, '#4ec9b0', '12px monospace'))
-      })
-    )
-  )
+  laptopTex = ctex(1024, 660, (c, w, h) => drawMacScreen(c, w, h, loadMacTerm()))
+  const sc = new THREE.Mesh(new THREE.PlaneGeometry(0.355, 0.225), screenMat(laptopTex))
   sc.position.set(0, 0.125, 0.0048)
   lid.add(sc)
   laptopScr = sc
+  laptopBlank = new THREE.Mesh(
+    new THREE.PlaneGeometry(0.355, 0.225),
+    new THREE.MeshBasicMaterial({ color: 0x050508 })
+  )
+  laptopBlank.position.set(0, 0.125, 0.0049)
+  laptopBlank.visible = false
+  lid.add(laptopBlank)
   // screen glass
   const lg = new THREE.Mesh(
     new THREE.PlaneGeometry(0.355, 0.225),
@@ -2525,6 +2882,43 @@ function buildLaptop() {
   lid.add(lg)
   cursor = box(lid, 0.006, 0.012, 0.001, M(0xffffff, 1), 0.0, 0.06, 0.0055)
   cursor.material = new THREE.MeshBasicMaterial({ color: 0xffffff })
+}
+function openMacView() {
+  if (!macOpen) setMacOpen(true, { quiet: true })
+  if (!PWR.mac) {
+    PWR.mac = true
+    applyDevicePower()
+  }
+  if (sitting) setSitting(false, true)
+  if (topView) setTopView(false)
+  if (pano) setPano(false)
+  zoom = 'mac'
+  returning = 0
+  controls.enabled = false
+  refreshMacScreen()
+  syncHint()
+  sfxClick()
+}
+function openMacDialog() {
+  if (!macOpen) setMacOpen(true, { quiet: true })
+  if (!PWR.mac) {
+    PWR.mac = true
+    applyDevicePower()
+  }
+  $('macText').value = loadMacTerm()
+  $('macDlg').classList.add('open')
+  setTimeout(() => $('macText').focus(), 40)
+}
+function closeMacDialog() {
+  $('macDlg')?.classList.remove('open')
+}
+function saveMacFromDialog() {
+  const t = $('macText').value
+  saveMacTerm(t)
+  refreshMacScreen(t)
+  closeMacDialog()
+  if (zoom !== 'mac') openMacView()
+  sfxClick()
 }
 
 /* 13-buildmugs-owl-mug-white-cup-steam-pen-mouse.js */
@@ -2569,7 +2963,7 @@ function buildMugs() {
       c.fill()
     })
   })
-  vessel(-0.6, -0.33, 0.9475, 0.05, 0.054, 0.11, owl, 0xb5651d) // čaj
+  teaMugG = vessel(-0.6, -0.33, 0.9475, 0.05, 0.054, 0.11, owl, 0xb5651d) // čaj
   box(scene, 0.03, 0.004, 0.03, M(0x7a5a2a, 0.9), -0.585, 1.043, -0.33).rotation.y = 0.4 // čajové vrecúško
   box(scene, 0.026, 0.026, 0.002, M(0xf3e9c8, 0.9), -0.543, 1.032, -0.33) // štítok
   layCable(
@@ -2602,7 +2996,7 @@ function buildMugs() {
       c.stroke()
     }
   })
-  vessel(0.65, -0.33, 0.9595, 0.04, 0.064, 0.075, cupT)
+  coffeeMugG = vessel(0.65, -0.33, 0.9595, 0.04, 0.064, 0.075, cupT)
   const h2 = new THREE.Mesh(new THREE.TorusGeometry(0.02, 0.005, 8, 20, Math.PI), M(0xf6f6f4, 0.3))
   h2.position.set(0.695, 0.9595 + 0.038, -0.33)
   h2.rotation.z = -Math.PI / 2
@@ -2630,15 +3024,32 @@ function buildMugs() {
   steam2.position.set(-0.6, 1.08, -0.33)
   scene.add(steam2)
   // pero na stole (nie vo vzduchu) — pri puzdre
-  const deskPen = cyl(scene, 0.006, 0.15, M(0xc01818, 0.4), -0.52, DESK_TOP + 0.0065, 0.12)
-  deskPen.rotation.z = Math.PI / 2
-  deskPen.rotation.y = 0.35
+  {
+    const dg = new THREE.Group()
+    dg.position.set(-0.52, DESK_TOP + 0.007, 0.12)
+    dg.rotation.set(0, 0.35, Math.PI / 2)
+    const db = M(0xb41c1c, 0.32, 0.28),
+      dc = M(0xd4d6dc, 0.22, 0.95),
+      dt = M(0x1a1a1e, 0.28, 0.85)
+    const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.0068, 0.0072, 0.1, 20), db)
+    barrel.castShadow = true
+    dg.add(barrel)
+    const tip = new THREE.Mesh(new THREE.ConeGeometry(0.006, 0.016, 14), dt)
+    tip.position.y = -0.056
+    dg.add(tip)
+    const clip = new THREE.Mesh(new THREE.BoxGeometry(0.028, 0.002, 0.006), dc)
+    clip.position.set(0.008, 0.02, 0)
+    dg.add(clip)
+    scene.add(dg)
+  }
   const deskClip = box(scene, 0.04, 0.002, 0.004, M(0xcccccc, 0.2, 0.9), -0.48, DESK_TOP + 0.012, 0.11)
   deskClip.rotation.y = 0.35
-  // Magic Mouse – hladké telo + spodok
+  // Magic Mouse – hladké telo + spodok (+ väčší hitbox na ťahanie)
   const mouse = new THREE.Group()
   mouse.position.set(1.1, DESK_TOP + 0.012, 0.38)
   scene.add(mouse)
+  deskMouseG = mouse
+  mouse.userData.isDeskMouse = true
   const mBody = new THREE.Mesh(
     new THREE.SphereGeometry(0.048, 28, 16),
     new THREE.MeshStandardMaterial({ color: 0xf4f4f6, roughness: 0.22, metalness: 0.05 })
@@ -2654,6 +3065,12 @@ function buildMugs() {
   mouse.add(mBottom)
   // jemná deliaca linka (L/R)
   box(mouse, 0.0015, 0.001, 0.06, M(0xd0d0d4, 0.4), 0, 0.01, 0)
+  const mHit = new THREE.Mesh(
+    new THREE.BoxGeometry(0.1, 0.04, 0.16),
+    new THREE.MeshBasicMaterial({ visible: false })
+  )
+  mHit.name = 'deskMouseHit'
+  mouse.add(mHit)
 }
 function vessel(x, z, y0, ro, rt, h, tex, liq = 0x3b2314) {
   const V2 = (a) => a.map((p) => new THREE.Vector2(p[0], p[1]))
@@ -2763,7 +3180,7 @@ function updateRoomWind(dt, t) {
   const gustTarget =
     open * (0.55 + 0.45 * (0.5 + 0.5 * Math.sin(t * 0.7) + 0.25 * Math.sin(t * 1.9 + 1.2)))
   roomWindGust += (gustTarget - roomWindGust) * (1 - 0.02 ** dt)
-  const strength = roomWindGust
+  const strength = roomWindGust * (open > 0.85 ? 1.5 : 1)
   // vzdušné guľky vypnuté — ostáva len pohyb papiera / pary
   roomWind.visible = false
   roomWind.material.opacity = 0
@@ -3153,7 +3570,73 @@ function buildCables() {
 }
 
 /* 17-buildclock-nastenne-hodiny-ukazuju-skutocny-cas.js */
-let lastSec = -1
+let lastSec = -1,
+  lastCalDay = '',
+  wallCalMesh = null,
+  wallCalCanvas = null
+const CAL_MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MÁJ', 'JÚN', 'JÚL', 'AUG', 'SEP', 'OKT', 'NOV', 'DEC']
+const CAL_DAYS = ['nedeľa', 'pondelok', 'utorok', 'streda', 'štvrtok', 'piatok', 'sobota']
+function drawWallCalendar(d = new Date()) {
+  if (!wallCalCanvas) {
+    wallCalCanvas = document.createElement('canvas')
+    wallCalCanvas.width = 256
+    wallCalCanvas.height = 280
+  }
+  const c = wallCalCanvas.getContext('2d'),
+    w = wallCalCanvas.width,
+    h = wallCalCanvas.height
+  const mon = CAL_MONTHS[d.getMonth()],
+    day = String(d.getDate()),
+    weekday = CAL_DAYS[d.getDay()]
+  c.fillStyle = '#f4f0e8'
+  c.fillRect(0, 0, w, h)
+  c.fillStyle = '#c45c3a'
+  c.fillRect(0, 0, w, 48)
+  c.fillStyle = '#fff'
+  c.textAlign = 'center'
+  c.font = 'bold 28px sans-serif'
+  c.fillText(mon, w / 2, 34)
+  c.fillStyle = '#333'
+  c.font = 'bold 72px sans-serif'
+  c.fillText(day, w / 2, 150)
+  c.font = '18px sans-serif'
+  c.fillText(weekday, w / 2, 190)
+  c.strokeStyle = '#ddd'
+  c.lineWidth = 1
+  // mini týždeň: dnešný deň zvýraznený
+  const start = new Date(d.getFullYear(), d.getMonth(), d.getDate() - d.getDay())
+  for (let i = 0; i < 7; i++) {
+    const cell = new Date(start.getFullYear(), start.getMonth(), start.getDate() + i)
+    const x = 18 + i * 32,
+      y = 218
+    c.strokeRect(x, y, 28, 28)
+    if (cell.toDateString() === d.toDateString()) {
+      c.fillStyle = '#c45c3a'
+      c.fillRect(x + 1, y + 1, 26, 26)
+      c.fillStyle = '#fff'
+    } else {
+      c.fillStyle = '#666'
+    }
+    c.font = 'bold 12px sans-serif'
+    c.fillText(String(cell.getDate()), x + 14, y + 19)
+  }
+  if (wallCalMesh?.material?.map) {
+    wallCalMesh.material.map.needsUpdate = true
+  }
+  lastCalDay = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`
+}
+function buildWallCalendar() {
+  drawWallCalendar()
+  const tex = new THREE.CanvasTexture(wallCalCanvas)
+  tex.colorSpace = THREE.SRGBColorSpace
+  tex.anisotropy = 8
+  wallCalMesh = new THREE.Mesh(
+    new THREE.PlaneGeometry(0.28, 0.32),
+    new THREE.MeshStandardMaterial({ map: tex, roughness: 0.85 })
+  )
+  wallCalMesh.position.set(2.35, 1.85, -0.58)
+  scene.add(wallCalMesh)
+}
 function buildClock() {
   const g = new THREE.Group()
   g.position.set(0.85, 1.95, -0.58)
@@ -3217,6 +3700,8 @@ function updateClock() {
   clockM.rotation.z = (-min / 60) * T
   clockH.rotation.z = (-hr / 12) * T
   sfxTick(sec % 2 === 0)
+  const key = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`
+  if (wallCalMesh && key !== lastCalDay) drawWallCalendar(d)
 }
 
 /* 18-buildlights-ceiling-pendant-desk-lamp-light-dark.js */
@@ -3511,17 +3996,18 @@ function applyTime(dt) {
   if (drag < 0) {
     // otváranie rýchlejšie, zatváranie pomalšie + dojazdom
     const closing = S.openT < S.open - 0.001
-    const openRate = closing ? 1.55 : 3.2
+    const openRate = (closing ? 1.35 : 2.6) / Math.max(0.5, Anim.camSmooth)
     S.open += (S.openT - S.open) * (1 - Math.exp(-openRate * dt))
     if (Math.abs(S.openT - S.open) < 0.002) S.open = S.openT
   }
-  S.ceil += (S.ceilT - S.ceil) * k
-  S.lamp += (S.lampT - S.lamp) * k
-  S.sp.lerp(TV.set(...p.sp), k)
-  S.sc.lerp(TC.set(p.sc), k)
-  S.sky.lerp(TC2.set(p.sky), k)
-  S.si += (p.si - S.si) * k
-  S.amb += (p.amb - S.amb) * k
+  const lightK = Anim.reduceMotion ? 1 - 0.08 ** dt : k
+  S.ceil += (S.ceilT - S.ceil) * lightK
+  S.lamp += (S.lampT - S.lamp) * lightK
+  S.sp.lerp(TV.set(...p.sp), lightK)
+  S.sc.lerp(TC.set(p.sc), lightK)
+  S.sky.lerp(TC2.set(p.sky), lightK)
+  S.si += (p.si - S.si) * lightK
+  S.amb += (p.amb - S.amb) * lightK
   S.flash *= 0.9
   if (S.i === 5 && Math.random() < 0.004) {
     S.flash = 1
@@ -3893,6 +4379,7 @@ const ZOOMS = {
   window: [V(-1.62, 1.58, 0.72), V(-2.58, 1.58, 0.7)],
   trash: [V(-0.92, 0.38, 0.62), V(-1.1, 0.11, 0.44)],
   paper: [PAPER_Z, PAPER_T],
+  mac: [V(0.0, 1.05, 0.95), V(0.0, 0.92, 0.32)],
 }
 const P360 = V(0.6, 1.5, 2.4)
 // Odkazy na nástenke – uprav podľa seba ("|" = nový riadok na lístku)
@@ -4018,12 +4505,15 @@ function isNoteOffBoard(mesh) {
   return p.x < -0.72 || p.x > 0 || p.y < 1.72 || p.y > 2.2
 }
 const HINT_DEFAULT =
-  'E = sadnúť · Papier: klik / P · Kvetina: klik / W = zaliať · nástenka: Shift+klik / Delete'
+  'E = sadnúť · pri sedení: ĽMB = myš, RMB = rozhliadaj · klik/W = zaliať'
 const HINT_BOARD =
   'Nástenka: ťahaj lístky po korku · dvojklik = hod do koša · Shift+klik = zmazať · Esc = späť'
 const HINT_TRASH = 'Kôš: pohľad na neporiadok · klik na pedál alebo Esc = späť'
 const HINT_PAPER =
   'Papier zhora: čitateľný text · klikni pero = atrament · P / klik na list = písať · Esc = späť'
+const HINT_MAC =
+  'MacBook: píš priamo (echo/date/clear/npm run) · O = veko · Esc = späť'
+const HINT_BOOK = 'Otvorená kniha: ←/→ alebo klik = listovať · Esc = späť'
 function syncHint() {
   const h = $('hint')
   if (!h) return
@@ -4034,7 +4524,11 @@ function syncHint() {
         ? HINT_TRASH
         : zoom === 'paper'
           ? HINT_PAPER
-          : HINT_DEFAULT
+          : zoom === 'mac'
+            ? HINT_MAC
+            : zoom === 'book'
+              ? HINT_BOOK
+              : HINT_DEFAULT
 }
 function tossBoardNote(mesh, { quiet = false, skipMess = false } = {}) {
   let i = mesh?.userData?.slot
@@ -4231,15 +4725,51 @@ function seatBlocksLook(e) {
     (paperG && pick(e, paperG)) ||
     pickTrash(e) ||
     (laptopG && pick(e, laptopG)) ||
-    (paperG && pick(e, paperG))
+    (deskMouseG && pick(e, deskMouseG)) ||
+    (sillPlantG && pick(e, sillPlantG)) ||
+    (plantG && pick(e, plantG))
   )
 }
+let mouseDrag = false
 cv.addEventListener('pointerdown', (e) => {
   if (pano && !sitting) return
   const out = () => {
     zoom = null
     returning = 90
+    hideOpenBook?.()
     syncHint()
+  }
+  if (!zoom && typeof extrasPointerDown === 'function' && extrasPointerDown(e)) return
+  // pri sedení: Ľavé tlačidlo = ťahaj Magic Mouse; pravé = rozhliadaj
+  if (sitting && !zoom && !pano) {
+    if (e.button === 2 || e.altKey) {
+      seatLookDrag = true
+      try {
+        cv.setPointerCapture(e.pointerId)
+      } catch {}
+      return
+    }
+    if (e.button === 0 && deskMouseG && (!seatBlocksLook(e) || pick(e, deskMouseG))) {
+      // neblokuj papier/laptop — tie seatBlocksLook zachytí bez mouse
+      if (!(paperG && pick(e, paperG)) && !(laptopG && pick(e, laptopG)) && !pickTrash(e)) {
+        mouseDrag = true
+        try {
+          cv.setPointerCapture(e.pointerId)
+        } catch {}
+        return
+      }
+    }
+  }
+  if (deskMouseG && pick(e, deskMouseG)) {
+    mouseDrag = true
+    try {
+      cv.setPointerCapture(e.pointerId)
+    } catch {}
+    return
+  }
+  if (!zoom && waterCanG && pick(e, waterCanG) && waterAnimT <= 0) {
+    beginFloorDrag(waterCanG, e)
+    return
   }
   if (zoom === 'screen') {
     const h = hudHit(e)
@@ -4264,6 +4794,13 @@ cv.addEventListener('pointerdown', (e) => {
       openPaperDialog()
       sfxClick()
     } else out()
+  } else if (zoom === 'mac') {
+    if (laptopG && pick(e, laptopG)) {
+      /* živý terminál — dialóg len cez tlačidlo */
+      sfxClick()
+    } else out()
+  } else if (zoom === 'book' || zoom === 'polaroid') {
+    out()
   } else {
     const penHit = pickPen(e)
     if (penHit) {
@@ -4301,18 +4838,33 @@ cv.addEventListener('pointerdown', (e) => {
           returning = 0
         }
       } else if (laptopG && pick(e, laptopG)) {
-        togglePwr('mac')
+        if (e.shiftKey) toggleMacLid()
+        else if (!macOpen) setMacOpen(true)
+        else openMacView()
       }
     }
   }
-  if (sitting && !zoom && !seatBlocksLook(e)) {
-    try {
-      cv.setPointerCapture(e.pointerId)
-    } catch {}
-  }
+})
+cv.addEventListener('contextmenu', (e) => {
+  if (sitting) e.preventDefault()
 })
 cv.addEventListener('pointermove', (e) => {
-  if ((pano || sitting) && e.buttons) {
+  if (floorDrag && e.buttons) {
+    updateFloorDrag(e)
+    cv.style.cursor = 'grabbing'
+  }
+  if (mouseDrag && e.buttons) {
+    if (typeof ptrUV !== 'undefined') {
+      ptrUV.x = Math.max(0.05, Math.min(0.95, ptrUV.x + e.movementX * 0.0025))
+      ptrUV.y = Math.max(0.05, Math.min(0.95, ptrUV.y + e.movementY * 0.0025))
+    }
+    if (deskMouseG) {
+      const sens = sitting ? 0.0016 : 0.0009
+      deskMouseG.position.x = Math.max(0.75, Math.min(1.35, deskMouseG.position.x + e.movementX * sens))
+      deskMouseG.position.z = Math.max(0.18, Math.min(0.55, deskMouseG.position.z + e.movementY * sens))
+    }
+  }
+  if ((pano || seatLookDrag || (sitting && e.buttons === 2)) && e.buttons && !mouseDrag && !floorDrag) {
     const sens = sitting ? 0.0048 : 0.004
     yaw += e.movementX * sens
     pitch = Math.max(-0.95, Math.min(1.1, pitch - e.movementY * sens))
@@ -4339,8 +4891,10 @@ cv.addEventListener('pointermove', (e) => {
     } else cv.style.cursor = pick(e, noteGroup) || pick(e, trashHit) ? 'pointer' : 'grab'
   } else if (zoom === 'dell') cv.style.cursor = pick(e, dellG) ? 'pointer' : 'default'
   else if (!zoom && !pano && windowHit && pick(e, windowHit)) cv.style.cursor = 'pointer'
-  else if (sitting && !zoom) cv.style.cursor = e.buttons ? 'grabbing' : 'grab'
+  else if (sitting && !zoom)
+    cv.style.cursor = mouseDrag || e.buttons === 1 ? 'none' : e.buttons === 2 ? 'move' : 'default'
   else if (zoom === 'paper') cv.style.cursor = pickPen(e) || pickPaper(e) ? 'pointer' : 'default'
+  else if (zoom === 'mac') cv.style.cursor = laptopG && pick(e, laptopG) ? 'pointer' : 'default'
   else if (!e.buttons) {
     const onPaper = paperG && pick(e, paperG)
     const onChair = chairG && pick(e, chairG)
@@ -4353,12 +4907,19 @@ cv.addEventListener('pointermove', (e) => {
       pick(e, switchBox) ||
       pick(e, ceilHit) ||
       (plantG && pick(e, plantG)) ||
-      (waterCanG && pick(e, waterCanG))
+      (sillPlantG && pick(e, sillPlantG)) ||
+      (waterCanG && pick(e, waterCanG)) ||
+      (deskMouseG && pick(e, deskMouseG)) ||
+      pickShelfBook(e) ||
+      (laptopG && pick(e, laptopG))
         ? 'pointer'
         : 'default'
   }
 })
 cv.addEventListener('pointerup', (e) => {
+  mouseDrag = false
+  seatLookDrag = false
+  if (floorDrag) endFloorDrag()
   if (dragNote) {
     const mesh = dragNote
     const overTrash =
@@ -4421,11 +4982,15 @@ cv.addEventListener(
 )
 cv.addEventListener('click', (e) => {
   if (Math.hypot(e.clientX - pdx, e.clientY - pdy) >= 6) return
-  if (pick(e, lampG)) toggleLamp()
+  // krhla rieši pointerup (drag / zálievka)
+  if (waterCanG && pick(e, waterCanG)) return
+  const book = pickShelfBook(e)
+  if (book) toggleBook(book)
+  else if (pick(e, lampG)) toggleLamp()
   else if (pick(e, switchBox) || pick(e, ceilHit)) toggleCeil()
   else if (!pano && pickTrash(e)) toggleTrash()
-  else if (plantG && pick(e, plantG)) startWaterPlant()
-  else if (waterCanG && pick(e, waterCanG)) startWaterPlant()
+  else if (sillPlantG && pick(e, sillPlantG)) startWaterPlant('sill')
+  else if (plantG && pick(e, plantG)) startWaterPlant('floor')
 })
 cv.addEventListener(
   'wheel',
@@ -4441,7 +5006,14 @@ cv.addEventListener(
   { passive: true }
 )
 addEventListener('keydown', (e) => {
-  if (e.key >= '1' && e.key <= '7') setTimeOfDay(+e.key - 1)
+  if (typeof extrasHandleKey === 'function' && extrasHandleKey(e)) return
+  if (typingUi()) {
+    // Esc stále zatvára dialógy vyššie — ale čísla / sit pri písaní nie
+    if (e.key === 'Escape') {
+      /* fall through to Escape handling below only for dialogs */
+    } else return
+  }
+  if (!typingUi() && e.key >= '1' && e.key <= '7') setTimeOfDay(+e.key - 1)
   if (e.key === 'Escape') {
     if ($('noteDlg').classList.contains('open')) {
       closeNoteDialog()
@@ -4449,6 +5021,14 @@ addEventListener('keydown', (e) => {
     }
     if ($('paperDlg').classList.contains('open')) {
       closePaperDialog()
+      return
+    }
+    if ($('macDlg')?.classList.contains('open')) {
+      closeMacDialog()
+      return
+    }
+    if (typeof focusOn !== 'undefined' && focusOn) {
+      stopFocusMode(false)
       return
     }
     if (pano) setPano(false)
@@ -4465,27 +5045,33 @@ addEventListener('keydown', (e) => {
     zoom === 'board' &&
     selectedBoardNote &&
     !$('noteDlg').classList.contains('open') &&
-    !$('paperDlg').classList.contains('open')
+    !$('paperDlg').classList.contains('open') &&
+    !$('macDlg')?.classList.contains('open')
   ) {
     e.preventDefault()
     tossBoardNote(selectedBoardNote)
     selectedBoardNote = null
   }
+  if (typingUi()) return
   if (e.key === 't' || e.key === 'T') {
     if (!topView && sitting) setSitting(false, true)
     setTopView(!topView)
   }
   if (e.key === 'e' || e.key === 'E') setSitting(!sitting)
-  if (
-    (e.key === 'p' || e.key === 'P') &&
-    !$('paperDlg').classList.contains('open') &&
-    !$('noteDlg').classList.contains('open')
-  ) {
+  if (e.key === 'p' || e.key === 'P') {
     if (zoom !== 'paper') openPaperRead()
     openPaperDialog()
   }
+  if (e.key === 'm' || e.key === 'M') {
+    if (zoom !== 'mac') openMacView()
+  }
+  if (e.key === 'o' || e.key === 'O') toggleMacLid()
   if ((e.key === 'v' || e.key === 'V') && sitting) setPano(!pano)
-  if ((e.key === 'w' || e.key === 'W') && !typingUi()) startWaterPlant()
+  if (e.key === 'w' || e.key === 'W') {
+    // W = najprv parapet ak je kamera pri okne, inak veľká rastlina
+    const nearSill = camera.position.distanceTo(new THREE.Vector3(-2.4, 1.2, 0.3)) < 2.2
+    startWaterPlant(nearSill ? 'sill' : 'floor')
+  }
 })
 function setFov(v) {
   if (Math.abs(v - camera.fov) < 0.002) return
@@ -4541,16 +5127,33 @@ function toggleLamp() {
   savePrefs()
 }
 addEventListener('keydown', (e) => {
+  if (typingUi()) return
   if (e.key === 'l' || e.key === 'L') toggleLamp()
   if (e.key === 'c' || e.key === 'C') toggleCeil()
   if (e.key === 'r' || e.key === 'R') resetView()
 })
 function typingUi() {
-  return (
-    $('noteDlg')?.classList.contains('open') ||
-    $('paperDlg')?.classList.contains('open') ||
-    /^(INPUT|TEXTAREA)$/.test(document.activeElement?.tagName || '')
-  )
+  const tag = document.activeElement?.tagName || ''
+  if (/^(INPUT|TEXTAREA|SELECT)$/.test(tag)) return true
+  if (document.activeElement?.isContentEditable) return true
+  if ($('noteDlg')?.classList.contains('open')) return true
+  if ($('paperDlg')?.classList.contains('open')) return true
+  if ($('macDlg')?.classList.contains('open')) return true
+  // živý terminál na Macu — písanie písmen nesmie spínať E/sit a pod.
+  if (zoom === 'mac' && macOpen && PWR.mac) return true
+  return false
+}
+function syncAnimUi() {
+  const cam = $('rngCam')
+  const lid = $('rngLid')
+  if (cam) cam.value = String(Anim.camSmooth)
+  if (lid) lid.value = String(Anim.lidSmooth)
+  if ($('bReduceMotion')) setSw('bReduceMotion', Anim.reduceMotion)
+  if ($('bFocusSit')) setSw('bFocusSit', Anim.focusAutoSit)
+  const camLbl = $('lblCam')
+  const lidLbl = $('lblLid')
+  if (camLbl) camLbl.textContent = Anim.camSmooth.toFixed(1)
+  if (lidLbl) lidLbl.textContent = Anim.lidSmooth.toFixed(1)
 }
 function syncViewUi() {
   $('bOrb').classList.toggle('on', !pano && !topView && !sitting)
@@ -4640,16 +5243,59 @@ $('bTop').onclick = () => setTopView(true)
 $('bReset').onclick = resetView
 $('bBack').onclick = resetView
 $('bSit').onclick = () => setSitting(!sitting)
+const wireAnimControls = () => {
+  const cam = $('rngCam')
+  const lid = $('rngLid')
+  if (cam)
+    cam.oninput = () => {
+      Anim.camSmooth = +cam.value
+      syncAnimUi()
+      savePrefs()
+    }
+  if (lid)
+    lid.oninput = () => {
+      Anim.lidSmooth = +lid.value
+      syncAnimUi()
+      savePrefs()
+    }
+  if ($('bReduceMotion'))
+    $('bReduceMotion').onclick = () => {
+      Anim.reduceMotion = !Anim.reduceMotion
+      setSw('bReduceMotion', Anim.reduceMotion)
+      savePrefs()
+    }
+  if ($('bFocusSit'))
+    $('bFocusSit').onclick = () => {
+      Anim.focusAutoSit = !Anim.focusAutoSit
+      setSw('bFocusSit', Anim.focusAutoSit)
+      savePrefs()
+    }
+  syncAnimUi()
+}
+wireAnimControls()
+// orbit damping podľa preferencie
+controls.dampingFactor = Anim.reduceMotion ? 0.14 : 0.06
 $('bRad').onclick = () => setRadiator(!radiatorOn)
 $('bTrash').onclick = () => toggleTrash()
 if ($('bWater')) $('bWater').onclick = () => startWaterPlant()
 $('bPwrAoc').onclick = () => togglePwr('aoc')
 $('bPwrDell').onclick = () => togglePwr('dell')
 $('bPwrMac').onclick = () => togglePwr('mac')
+if ($('bMacLid')) $('bMacLid').onclick = () => toggleMacLid()
+if ($('bMacWrite'))
+  $('bMacWrite').onclick = () => {
+    openMacView()
+    openMacDialog()
+  }
 $('paperCancel').onclick = closePaperDialog
 $('paperSave').onclick = savePaper
 $('paperDlg').addEventListener('click', (e) => {
   if (e.target === $('paperDlg')) closePaperDialog()
+})
+$('macCancel')?.addEventListener('click', closeMacDialog)
+$('macSave')?.addEventListener('click', saveMacFromDialog)
+$('macDlg')?.addEventListener('click', (e) => {
+  if (e.target === $('macDlg')) closeMacDialog()
 })
 $('penRow')?.addEventListener('click', (e) => {
   const b = e.target.closest('.penPick')
@@ -4699,6 +5345,10 @@ function onResize() {
   camera.aspect = innerWidth / innerHeight
   camera.updateProjectionMatrix()
   renderer.setSize(innerWidth, innerHeight)
+  if (typeof nightComposer !== 'undefined' && nightComposer) {
+    nightComposer.setSize(innerWidth, innerHeight)
+    nightBloomPass?.setSize?.(innerWidth, innerHeight)
+  }
 }
 addEventListener('resize', onResize)
 
@@ -4744,7 +5394,8 @@ renderer.setAnimationLoop(() => {
     applyTime(dt)
     updateClimate(dt)
     updateWaterPlant(dt, t)
-    const kz = 1 - 0.002 ** dt
+    updateBookAnim(dt)
+    const kz = camLerpK(dt)
     if (pano) {
       controls.enabled = false
       const panoPos = panoAnchor === 'seat' && sitting ? SEAT_POS : P360
@@ -4771,7 +5422,8 @@ renderer.setAnimationLoop(() => {
       seatLookAt()
     } else if (zoom) {
       controls.enabled = false
-      const fovTgt = zoom === 'trash' ? 40 : zoom === 'paper' ? 32 : 35
+      const fovTgt =
+        zoom === 'trash' ? 40 : zoom === 'paper' || zoom === 'book' || zoom === 'polaroid' ? 32 : 35
       setFov(camera.fov + (fovTgt - camera.fov) * kz)
       const Z = ZOOMS[zoom]
       camera.position.lerp(Z[0], kz)
@@ -4801,13 +5453,12 @@ renderer.setAnimationLoop(() => {
       lastBB = bb
     }
     updateMedalsWind(t, dt)
+    if (typeof updateExtras === 'function') updateExtras(dt, t)
     leds.forEach((l, i) => (l.visible = Math.sin(t * 9 + i * 2.1) > -0.3))
     applyMacLid(dt)
     updateTrashLid(dt)
     updateTrashMess(dt, t)
     updateNoteTossAnims(dt)
-    if (!PWR.mac) cursor.visible = false
-    else cursor.visible = Math.floor(t * 2) % 2 === 0
     if (noteFlashT > 0 && noteFlash) {
       noteFlashT -= dt
       const s = 1 + 0.06 * Math.sin(t * 14)
@@ -4876,10 +5527,971 @@ renderer.setAnimationLoop(() => {
     }
     renderer.shadowMap.needsUpdate = osDirty
     osDirty = false
-    renderer.render(scene, camera)
+    if (typeof nightComposer !== 'undefined' && nightComposer && S.i >= 5) {
+      nightComposer.render()
+    } else {
+      renderer.render(scene, camera)
+    }
   } catch (err) {
     console.error(err)
     const h = $('hint')
     if (h) h.textContent = `Chyba v animácii: ${err.message}`
   }
 })
+/* ───────── Extras: focus, terminal, music, notifs, weather→in, coffee, book, mouse, night, polaroid, reflections, hands, presets ───────── */
+let focusOn = false,
+  focusLeft = 0,
+  focusFlash = 0,
+  focusSaved = null,
+  macTermLines = null,
+  macInputLine = '',
+  musicOn = false,
+  musicPhase = 0,
+  musicBass = 0,
+  musicNodes = null,
+  musicCoverTex = null,
+  musicPlane = null,
+  notifT = 18,
+  notifG = null,
+  condensMesh = null,
+  condensAmt = 0,
+  coffeeHeat = { tea: 0.65, cup: 0.8 },
+  coffeeSipT = 0,
+  openBookG = null,
+  openBookPage = 0,
+  openBookTex = null,
+  aocPtr = null,
+  macPtr = null,
+  ptrUV = { x: 0.5, y: 0.5 },
+  nightBloomPass = null,
+  nightComposer = null,
+  screenGlowL = null,
+  polaroidG = null,
+  handsG = null,
+  deskMirror = null,
+  autoRadLatch = false
+
+const FOCUS_SECS = 25 * 60
+const NOTIF_MSGS = [
+  { t: 'PR review requested', s: 'Spst-Knižnica #142' },
+  { t: 'Build failed', s: 'ci · main · 12s ago' },
+  { t: 'New star ⭐', s: 'peterdinis511/Spst-Knižnica' },
+  { t: 'Deploy succeeded', s: 'production · edge' },
+  { t: 'Comment on issue', s: '#88 loading books' },
+]
+
+function ensureMacTerm() {
+  if (macTermLines) return
+  const raw = loadMacTerm()
+  macTermLines = raw.replace(/\r\n/g, '\n').split('\n')
+  if (macTermLines.length && macTermLines[macTermLines.length - 1] === '') macTermLines.pop()
+  if (!macTermLines.length || !String(macTermLines[macTermLines.length - 1]).startsWith('$')) {
+    macTermLines.push('$ ')
+  }
+  macInputLine = ''
+  const last = macTermLines[macTermLines.length - 1]
+  if (last.startsWith('$')) {
+    macInputLine = last.slice(2)
+    macTermLines[macTermLines.length - 1] = '$ ' + macInputLine
+  }
+}
+
+function macTermText() {
+  ensureMacTerm()
+  return macTermLines.join('\n') + (macTermLines[macTermLines.length - 1]?.startsWith('$') ? '' : '')
+}
+
+function syncMacTermStorage() {
+  saveMacTerm(macTermLines.join('\n'))
+  refreshMacScreen(macTermLines.join('\n'))
+}
+
+function macRunCommand(cmd) {
+  const c = (cmd || '').trim()
+  const out = []
+  if (!c) return out
+  if (c === 'clear' || c === 'cls') {
+    macTermLines = ['$ ']
+    macInputLine = ''
+    return null
+  }
+  if (c === 'date') {
+    out.push(new Date().toLocaleString('sk-SK'))
+  } else if (c === 'help') {
+    out.push('commands: echo, date, clear, npm run, pwd, whoami, ls, focus')
+  } else if (c === 'pwd') {
+    out.push('/Users/peter/desk-study')
+  } else if (c === 'whoami') {
+    out.push('peterdinis511')
+  } else if (c === 'ls') {
+    out.push('src/  web/  scripts/  package.json  README.md')
+  } else if (c === 'focus') {
+    out.push('starting focus mode…')
+    setTimeout(() => startFocusMode(), 200)
+  } else if (c.startsWith('echo ')) {
+    out.push(c.slice(5).replace(/^["']|["']$/g, ''))
+  } else if (c === 'echo') {
+    out.push('')
+  } else if (/^npm\s+run(\s+\S+)?/.test(c)) {
+    const script = (c.match(/^npm\s+run\s+(\S+)/) || [])[1] || 'dev'
+    out.push(`> desk-study@1.0.0 ${script}`)
+    out.push(`> vite`)
+    out.push('')
+    out.push('VITE v6.3.5  ready in 312 ms')
+    out.push('')
+    out.push('  ➜  Local:   http://127.0.0.1:5173/')
+    out.push('  ➜  press Ctrl+C to stop (simulated)')
+  } else {
+    out.push(`zsh: command not found: ${c.split(/\s+/)[0]}`)
+  }
+  return out
+}
+
+function macSubmitLine() {
+  ensureMacTerm()
+  const cmd = macInputLine
+  macTermLines[macTermLines.length - 1] = '$ ' + cmd
+  const result = macRunCommand(cmd)
+  if (result === null) {
+    syncMacTermStorage()
+    return
+  }
+  result.forEach((l) => macTermLines.push(l))
+  macInputLine = ''
+  macTermLines.push('$ ')
+  while (macTermLines.length > 40) macTermLines.shift()
+  syncMacTermStorage()
+}
+
+function macTypeKey(e) {
+  if (zoom !== 'mac' || !macOpen || !PWR.mac) return false
+  if ($('macDlg')?.classList.contains('open')) return false
+  ensureMacTerm()
+  if (e.key === 'Enter') {
+    e.preventDefault()
+    macSubmitLine()
+    return true
+  }
+  if (e.key === 'Backspace') {
+    e.preventDefault()
+    macInputLine = macInputLine.slice(0, -1)
+    macTermLines[macTermLines.length - 1] = '$ ' + macInputLine
+    syncMacTermStorage()
+    return true
+  }
+  if (e.key.length === 1 && !e.metaKey && !e.ctrlKey) {
+    e.preventDefault()
+    macInputLine += e.key
+    macTermLines[macTermLines.length - 1] = '$ ' + macInputLine
+    syncMacTermStorage()
+    return true
+  }
+  return false
+}
+
+/* —— Focus mode —— */
+function startFocusMode() {
+  audioInit()
+  if (focusOn) return
+  focusOn = true
+  focusLeft = FOCUS_SECS
+  focusFlash = 0
+  focusSaved = {
+    ceil: S.ceilT,
+    lamp: S.lampT,
+    open: S.openT,
+    day: S.i,
+  }
+  if (Anim.focusAutoSit && !sitting) setSitting(true, true)
+  else if (zoom) {
+    zoom = null
+    returning = 90
+  }
+  S.ceilT = 0
+  S.lampT = 0.15
+  setSw('bCeil', false)
+  setSw('bLamp', true)
+  if (S.i < 5) setTimeOfDay(5, true, true)
+  startFocusAmbient()
+  setSw('bFocus', true)
+  syncFocusUi()
+  const h = $('hint')
+  if (h) h.textContent = 'Focus 25:00 — Esc / F = koniec'
+  sfxClick()
+}
+
+function stopFocusMode(done = false) {
+  if (!focusOn && !done) return
+  focusOn = false
+  stopFocusAmbient()
+  if (focusSaved) {
+    S.ceilT = focusSaved.ceil
+    S.lampT = focusSaved.lamp
+    setSw('bCeil', S.ceilT > 0.5)
+    setSw('bLamp', S.lampT > 0.5)
+    focusSaved = null
+  }
+  setSw('bFocus', false)
+  if (done) {
+    focusFlash = 1.8
+    try {
+      sfxChime()
+    } catch {}
+  }
+  syncFocusUi()
+  syncHint()
+}
+
+function startFocusAmbient() {
+  if (!A.ctx || !A.on) return
+  if (A.focusAmb) return
+  const c = A.ctx
+  const o1 = c.createOscillator(),
+    o2 = c.createOscillator(),
+    g = c.createGain()
+  o1.type = 'sine'
+  o2.type = 'sine'
+  o1.frequency.value = 110
+  o2.frequency.value = 164.81
+  g.gain.value = 0.0001
+  o1.connect(g)
+  o2.connect(g)
+  g.connect(A.master)
+  o1.start()
+  o2.start()
+  g.gain.linearRampToValueAtTime(0.028, c.currentTime + 1.2)
+  A.focusAmb = { o1, o2, g }
+}
+
+function stopFocusAmbient() {
+  if (!A.focusAmb || !A.ctx) return
+  const { o1, o2, g } = A.focusAmb
+  try {
+    g.gain.linearRampToValueAtTime(0.0001, A.ctx.currentTime + 0.6)
+    setTimeout(() => {
+      try {
+        o1.stop()
+        o2.stop()
+      } catch {}
+    }, 700)
+  } catch {}
+  A.focusAmb = null
+}
+
+function syncFocusUi() {
+  const el = $('focusHud')
+  if (!el) return
+  el.classList.toggle('on', focusOn || focusFlash > 0)
+  if (focusOn) {
+    const m = Math.floor(focusLeft / 60),
+      s = Math.floor(focusLeft % 60)
+    el.textContent = `FOCUS ${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+  } else if (focusFlash > 0) el.textContent = 'DONE ✓'
+}
+
+function updateFocus(dt) {
+  if (focusOn) {
+    focusLeft -= dt
+    if (fr % 15 === 0) syncFocusUi()
+    if (focusLeft <= 0) {
+      focusLeft = 0
+      stopFocusMode(true)
+    }
+  }
+  if (focusFlash > 0) {
+    focusFlash -= dt
+    const pulse = 0.5 + 0.5 * Math.sin(performance.now() * 0.012)
+    if (aocBlank) {
+      /* flash via overlay lights */
+    }
+    if (screenGlowL) {
+      screenGlowL.intensity = 0.15 + pulse * 1.4
+      screenGlowL.color.setHex(0x88ffcc)
+    }
+    if (focusFlash <= 0) {
+      syncFocusUi()
+      if (screenGlowL) screenGlowL.color.setHex(0xa8c8ff)
+    }
+  }
+}
+
+/* —— Music —— */
+function drawMusicCover(playing) {
+  if (!musicCoverTex?.image) return
+  const c = musicCoverTex.image.getContext('2d'),
+    w = musicCoverTex.image.width,
+    h = musicCoverTex.image.height
+  const g = c.createLinearGradient(0, 0, w, h)
+  g.addColorStop(0, '#1a1028')
+  g.addColorStop(0.5, '#c45c2a')
+  g.addColorStop(1, '#0e1a22')
+  c.fillStyle = g
+  c.fillRect(0, 0, w, h)
+  for (let i = 0; i < 8; i++) {
+    c.fillStyle = `rgba(255,220,180,${0.04 + i * 0.02})`
+    c.beginPath()
+    c.arc(w * 0.35 + i * 12, h * 0.45, 40 + i * 18, 0, 7)
+    c.fill()
+  }
+  c.fillStyle = 'rgba(0,0,0,.45)'
+  c.fillRect(0, h - 70, w, 70)
+  txt(c, playing ? '▶ Deep Work Mix' : '❚❚ Paused', 16, h - 42, '#fff', 'bold 18px sans-serif')
+  txt(c, 'lo-fi · desk study', 16, h - 18, '#c8b8a8', '13px sans-serif')
+  // fake waveform
+  c.strokeStyle = '#f0a060'
+  c.lineWidth = 2
+  c.beginPath()
+  for (let x = 0; x < w; x += 4) {
+    const y = h * 0.55 + Math.sin(x * 0.08 + musicPhase) * (8 + musicBass * 30) * (playing ? 1 : 0.15)
+    if (x === 0) c.moveTo(x, y)
+    else c.lineTo(x, y)
+  }
+  c.stroke()
+  musicCoverTex.needsUpdate = true
+}
+
+function toggleMusic() {
+  audioInit()
+  musicOn = !musicOn
+  if (musicOn) startMusic()
+  else stopMusic()
+  drawMusicCover(musicOn)
+  if (musicPlane) musicPlane.visible = true
+  setSw('bMusic', musicOn)
+  sfxClick()
+}
+
+function startMusic() {
+  if (!A.ctx || musicNodes) return
+  const c = A.ctx
+  const master = c.createGain()
+  master.gain.value = 0.08
+  master.connect(A.master)
+  const mk = (f, type, g0) => {
+    const o = c.createOscillator(),
+      g = c.createGain()
+    o.type = type
+    o.frequency.value = f
+    g.gain.value = g0
+    o.connect(g)
+    g.connect(master)
+    o.start()
+    return { o, g }
+  }
+  musicNodes = {
+    master,
+    parts: [mk(55, 'sine', 0.35), mk(82.5, 'triangle', 0.12), mk(110, 'sine', 0.08)],
+  }
+}
+
+function stopMusic() {
+  if (!musicNodes) return
+  try {
+    musicNodes.parts.forEach((p) => p.o.stop())
+  } catch {}
+  musicNodes = null
+  musicBass = 0
+}
+
+function updateMusic(dt, t) {
+  musicPhase = t
+  if (musicOn) {
+    musicBass = 0.35 + 0.65 * Math.max(0, Math.sin(t * 2.2))
+    if (fr % 8 === 0) drawMusicCover(true)
+    // bass vibe medals + speaker
+    medals.forEach((m, i) => {
+      m.userData.velZ = (m.userData.velZ || 0) + Math.sin(t * 2.2 + i) * musicBass * 0.015
+    })
+    if (roomSpeakerG) {
+      const s = 1 + musicBass * 0.04
+      roomSpeakerG.scale.set(s, 1 + musicBass * 0.06, s)
+    }
+  } else if (roomSpeakerG) {
+    roomSpeakerG.scale.set(1, 1, 1)
+  }
+}
+
+/* —— Notifications —— */
+function spawnNotif() {
+  if (!notifG) return
+  const msg = NOTIF_MSGS[(Math.random() * NOTIF_MSGS.length) | 0]
+  const tex = ctex(512, 128, (c, w, h) => {
+    c.fillStyle = '#161b22'
+    c.fillRect(0, 0, w, h)
+    c.strokeStyle = '#30363d'
+    c.strokeRect(1, 1, w - 2, h - 2)
+    c.fillStyle = '#238636'
+    c.beginPath()
+    c.arc(28, h / 2, 10, 0, 7)
+    c.fill()
+    txt(c, msg.t, 52, 48, '#e6edf3', 'bold 22px sans-serif')
+    txt(c, msg.s, 52, 82, '#8b949e', '16px sans-serif')
+  })
+  const m = new THREE.Mesh(
+    new THREE.PlaneGeometry(0.28, 0.07),
+    new THREE.MeshBasicMaterial({ map: tex, transparent: true, toneMapped: false })
+  )
+  const onMac = Math.random() > 0.45 && macOpen && PWR.mac
+  if (onMac && laptopLid) {
+    laptopLid.add(m)
+    m.position.set(0.08, 0.18, 0.006)
+  } else if (dellG) {
+    dellG.add(m)
+    m.position.set(0, 0.48, 0.02)
+  } else {
+    scene.add(m)
+    m.position.set(0, 1.4, 0.2)
+  }
+  m.userData = { isNotif: true, life: 8, repo: true }
+  notifG.add(m)
+}
+
+function updateNotifs(dt) {
+  notifT -= dt
+  if (notifT <= 0) {
+    notifT = 22 + Math.random() * 28
+    if (PWR.mac || PWR.dell) spawnNotif()
+  }
+  if (!notifG) return
+  ;[...notifG.children].forEach((m) => {
+    m.userData.life -= dt
+    const mat = m.material
+    mat.opacity = Math.min(1, m.userData.life, 8 - m.userData.life)
+    mat.transparent = true
+    if (m.userData.life <= 0) {
+      if (m.parent) m.parent.remove(m)
+      mat.map?.dispose()
+      mat.dispose()
+    }
+  })
+}
+
+function pickNotif(e) {
+  if (!notifG) return null
+  for (const m of notifG.children) {
+    if (pick(e, m)) return m
+  }
+  return null
+}
+
+/* —— Weather → inside —— */
+function buildCondensation() {
+  condensMesh = new THREE.Mesh(
+    new THREE.PlaneGeometry(1.95, 1.55),
+    new THREE.MeshBasicMaterial({
+      map: ctex(256, 256, (c, w, h) => {
+        c.clearRect(0, 0, w, h)
+        for (let i = 0; i < 120; i++) {
+          const x = Math.random() * w,
+            y = Math.random() * h,
+            r = 1 + Math.random() * 3
+          c.fillStyle = `rgba(220,235,255,${0.15 + Math.random() * 0.35})`
+          c.beginPath()
+          c.arc(x, y, r, 0, 7)
+          c.fill()
+        }
+        for (let i = 0; i < 18; i++) {
+          c.strokeStyle = 'rgba(200,220,240,.25)'
+          c.beginPath()
+          const x = Math.random() * w
+          c.moveTo(x, 0)
+          c.quadraticCurveTo(x + 4, h * 0.5, x - 2, h)
+          c.stroke()
+        }
+      }),
+      transparent: true,
+      opacity: 0,
+      depthWrite: false,
+      toneMapped: false,
+    })
+  )
+  condensMesh.rotation.y = Math.PI / 2
+  condensMesh.position.set(-2.545, 1.6, 0.7)
+  condensMesh.renderOrder = 3
+  scene.add(condensMesh)
+}
+
+function updateWeatherCoupling(dt) {
+  const raining = MIX[S.i]?.[1] > 0.3
+  const cold = outdoorTemp < 10
+  const wantCond = raining && !windowIsOpen() ? 0.55 : raining ? 0.2 : cold ? 0.12 : 0
+  condensAmt += (wantCond - condensAmt) * Math.min(1, dt * 0.4)
+  if (condensMesh) condensMesh.material.opacity = condensAmt
+
+  // zima → radiátor sám
+  if (cold && roomTemp < 17 && !radiatorOn && !autoRadLatch) {
+    autoRadLatch = true
+    setRadiator(true, true)
+    const h = $('hint')
+    if (h && !focusOn) {
+      h.textContent = 'Zima vonku — radiátor sa zapol'
+      setTimeout(() => syncHint(), 2200)
+    }
+  }
+  if (!cold) autoRadLatch = false
+
+  // silnejší vietor pri dokorán
+  roomWindGust = Math.max(roomWindGust || 0, S.open > 0.85 ? 1.25 : roomWindGust || 0)
+}
+
+/* —— Coffee —— */
+function sipCoffee(which = 'cup') {
+  coffeeHeat[which] = Math.min(1, coffeeHeat[which] + 0.35)
+  coffeeSipT = 0.45
+  audioInit()
+  if (A.ctx && A.on) {
+    const c = A.ctx,
+      o = c.createOscillator(),
+      g = c.createGain()
+    o.type = 'sine'
+    o.frequency.setValueAtTime(180, c.currentTime)
+    o.frequency.exponentialRampToValueAtTime(60, c.currentTime + 0.2)
+    g.gain.setValueAtTime(0.04, c.currentTime)
+    g.gain.exponentialRampToValueAtTime(0.001, c.currentTime + 0.25)
+    o.connect(g)
+    g.connect(A.master)
+    o.start()
+    o.stop(c.currentTime + 0.26)
+  }
+  sfxClick()
+}
+
+function updateCoffee(dt) {
+  coffeeHeat.tea = Math.max(0, coffeeHeat.tea - dt * 0.012)
+  coffeeHeat.cup = Math.max(0, coffeeHeat.cup - dt * 0.01)
+  if (coffeeSipT > 0) coffeeSipT -= dt
+  if (steam?.material) {
+    steam.material.opacity = 0.05 + coffeeHeat.cup * 0.35
+    steam.visible = coffeeHeat.cup > 0.05
+  }
+  if (steam2?.material) {
+    steam2.material.opacity = 0.04 + coffeeHeat.tea * 0.3
+    steam2.visible = coffeeHeat.tea > 0.05
+  }
+}
+
+/* —— Open book —— */
+function drawOpenBookPage(page) {
+  return ctex(1024, 512, (c, w, h) => {
+    c.fillStyle = '#f3ead8'
+    c.fillRect(0, 0, w, h)
+    c.fillStyle = '#e8dcc4'
+    c.fillRect(w / 2 - 4, 0, 8, h)
+    c.strokeStyle = 'rgba(80,60,40,.15)'
+    for (let y = 48; y < h - 24; y += 28) {
+      c.beginPath()
+      c.moveTo(40, y)
+      c.lineTo(w / 2 - 24, y)
+      c.moveTo(w / 2 + 24, y)
+      c.lineTo(w - 40, y)
+      c.stroke()
+    }
+    const left = [
+      'Kapitola ' + (page + 1),
+      '',
+      'Ráno pri stole je ticho,',
+      'len radiátor tiká a káva',
+      'stúpa v páre. Kód čaká.',
+      '',
+      'Jedna funkcia. Jeden dych.',
+    ]
+    const right = [
+      'Poznámky',
+      '',
+      '• focus 25 min',
+      '• commit pred obedom',
+      '• nezabudni na testy',
+      '',
+      'strana ' + (page * 2 + 2),
+    ]
+    left.forEach((l, i) =>
+      txt(c, l, 48, 56 + i * 32, i === 0 ? '#5a3020' : '#2a2018', i === 0 ? 'bold 22px Georgia' : '16px Georgia')
+    )
+    right.forEach((l, i) =>
+      txt(c, l, w / 2 + 36, 56 + i * 32, i === 0 ? '#5a3020' : '#2a2018', i === 0 ? 'bold 22px Georgia' : '16px Georgia')
+    )
+  })
+}
+
+function ensureOpenBook() {
+  if (openBookG) return openBookG
+  openBookG = new THREE.Group()
+  openBookG.position.copy(BOOK_DESK_POS)
+  openBookG.position.y = DESK_TOP + 0.004
+  openBookG.rotation.y = -0.4
+  openBookG.visible = false
+  scene.add(openBookG)
+  openBookTex = drawOpenBookPage(0)
+  const pages = new THREE.Mesh(
+    new THREE.PlaneGeometry(0.28, 0.18),
+    new THREE.MeshBasicMaterial({ map: openBookTex, toneMapped: false })
+  )
+  pages.rotation.x = -Math.PI / 2
+  pages.position.y = 0.006
+  openBookG.add(pages)
+  openBookG.userData.pages = pages
+  box(openBookG, 0.29, 0.008, 0.19, M(0x5a3028, 0.7), 0, 0.002, 0)
+  return openBookG
+}
+
+function showOpenBookFromDesk(book) {
+  ensureOpenBook()
+  if (book) book.visible = false
+  openBookG.visible = true
+  openBookG.userData.sourceBook = book
+  openBookPage = 0
+  flipOpenBook(0)
+}
+
+function flipOpenBook(dir) {
+  openBookPage = Math.max(0, Math.min(4, openBookPage + dir))
+  const tex = drawOpenBookPage(openBookPage)
+  const pages = openBookG?.userData?.pages
+  if (pages) {
+    pages.material.map?.dispose()
+    pages.material.map = tex
+    pages.material.needsUpdate = true
+  }
+  openBookTex = tex
+  sfxClick()
+}
+
+function hideOpenBook() {
+  if (!openBookG?.visible) return
+  openBookG.visible = false
+  const b = openBookG.userData.sourceBook
+  if (b) b.visible = true
+}
+
+/* —— Mouse → screen cursor —— */
+function updateScreenPointers() {
+  if (aocPtr) {
+    aocPtr.position.set((ptrUV.x - 0.5) * 0.5, (0.5 - ptrUV.y) * 0.3, 0.01)
+    aocPtr.visible = PWR.aoc && zoom !== 'mac'
+  }
+  if (macPtr && laptopLid) {
+    macPtr.visible = PWR.mac && macOpen && zoom === 'mac'
+    macPtr.position.set((ptrUV.x - 0.5) * 0.28, 0.125 + (0.5 - ptrUV.y) * 0.18, 0.006)
+  }
+}
+
+/* —— Night bloom / screen glow —— */
+function setupNightPost() {
+  if (typeof EffectComposer === 'undefined') return
+  nightComposer = new EffectComposer(renderer)
+  nightComposer.addPass(new RenderPass(scene, camera))
+  nightBloomPass = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.35, 0.4, 0.85)
+  nightComposer.addPass(nightBloomPass)
+  screenGlowL = new THREE.PointLight(0xa8c8ff, 0.2, 3.5, 2)
+  screenGlowL.position.set(0.05, 1.15, 0.1)
+  scene.add(screenGlowL)
+}
+
+function updateNightMode() {
+  const night = S.i >= 5
+  if (screenGlowL) {
+    const base = night ? 0.55 : 0.08
+    const fromScreens = (PWR.aoc ? 0.25 : 0) + (PWR.mac && macOpen ? 0.2 : 0) + (PWR.dell ? 0.15 : 0)
+    if (focusFlash <= 0) screenGlowL.intensity = base * fromScreens + (focusOn ? 0.1 : 0)
+  }
+  if (nightBloomPass) {
+    nightBloomPass.strength = night ? 0.42 : 0.08
+    nightBloomPass.threshold = night ? 0.72 : 0.92
+  }
+  renderer.toneMappingExposure = night ? 0.92 : 1.05
+}
+
+/* —— Polaroid —— */
+function buildPolaroid() {
+  polaroidG = new THREE.Group()
+  polaroidG.position.set(0.85, DESK_TOP + 0.003, 0.18)
+  polaroidG.rotation.y = -0.35
+  scene.add(polaroidG)
+  const frame = box(polaroidG, 0.11, 0.002, 0.13, M(0xf5f2ea, 0.9), 0, 0.002, 0)
+  frame.userData.isPolaroid = true
+  const photo = new THREE.Mesh(
+    new THREE.PlaneGeometry(0.09, 0.08),
+    new THREE.MeshBasicMaterial({
+      map: ctex(256, 220, (c, w, h) => {
+        const g = c.createLinearGradient(0, 0, w, h)
+        g.addColorStop(0, '#6a8cae')
+        g.addColorStop(0.55, '#c4a574')
+        g.addColorStop(1, '#3a4a38')
+        c.fillStyle = g
+        c.fillRect(0, 0, w, h)
+        c.fillStyle = 'rgba(255,255,255,.2)'
+        c.fillRect(0, 0, w, 30)
+        // tiny desk silhouette
+        c.fillStyle = '#2a2018'
+        c.fillRect(40, 120, 160, 40)
+        c.fillStyle = '#1a1a22'
+        c.fillRect(70, 70, 50, 50)
+        c.fillRect(130, 85, 40, 35)
+      }),
+      toneMapped: false,
+    })
+  )
+  photo.rotation.x = -Math.PI / 2
+  photo.position.set(0, 0.004, -0.008)
+  polaroidG.add(photo)
+  polaroidG.userData.isPolaroid = true
+}
+
+function openPolaroid() {
+  zoom = 'polaroid'
+  returning = 0
+  ZOOMS.polaroid = [
+    V(0.85, DESK_TOP + 0.35, 0.42),
+    V(0.85, DESK_TOP + 0.01, 0.18),
+  ]
+  syncHint()
+  sfxClick()
+  const h = $('hint')
+  if (h) h.textContent = 'Desk study, 2026 — Esc = späť'
+}
+
+/* —— Fake desk reflection —— */
+function buildDeskReflection() {
+  deskMirror = new THREE.Mesh(
+    new THREE.PlaneGeometry(2.35, 0.95),
+    new THREE.MeshStandardMaterial({
+      color: 0x3a2a1c,
+      metalness: 0.65,
+      roughness: 0.28,
+      transparent: true,
+      opacity: 0.22,
+    })
+  )
+  deskMirror.rotation.x = -Math.PI / 2
+  deskMirror.position.set(0.15, DESK_TOP + 0.0012, 0.05)
+  deskMirror.receiveShadow = true
+  scene.add(deskMirror)
+}
+
+/* —— Hands —— */
+function buildHands() {
+  handsG = new THREE.Group()
+  handsG.visible = false
+  if (!camera.parent) scene.add(camera)
+  camera.add(handsG)
+  const skin = M(0xc4a07a, 0.75, 0.05)
+  const mkHand = (x) => {
+    const h = new THREE.Group()
+    h.position.set(x, -0.22, -0.45)
+    h.rotation.x = -0.5
+    box(h, 0.045, 0.018, 0.07, skin, 0, 0, 0)
+    for (let i = 0; i < 4; i++) {
+      const f = box(h, 0.01, 0.01, 0.035, skin, -0.015 + i * 0.012, 0.005, -0.045)
+      f.rotation.x = -0.2
+    }
+    box(h, 0.012, 0.012, 0.03, skin, 0.028, 0.002, -0.01).rotation.y = 0.5
+    handsG.add(h)
+    return h
+  }
+  mkHand(-0.12)
+  mkHand(0.14)
+}
+
+function updateHands() {
+  if (!handsG) return
+  const show = zoom === 'mac' || zoom === 'paper' || focusOn
+  handsG.visible = show
+  if (show) {
+    const tap = Math.sin(performance.now() * 0.02) * 0.008
+    handsG.children.forEach((h, i) => {
+      h.position.y = -0.22 + (i === 0 && zoom === 'mac' ? tap : 0)
+    })
+  }
+}
+
+/* —— Presets —— */
+function applyScenePreset(name) {
+  if (name === 'rano') {
+    setTimeOfDay(1, false, false)
+    S.openT = 1
+    setSw('bWin', true)
+    S.ceilT = 1
+    S.lampT = 0
+    setSw('bCeil', true)
+    setSw('bLamp', false)
+    setRadiator(false, true)
+    if (!macOpen) setMacOpen(true, { quiet: true, skipSave: true })
+  } else if (name === 'deep') {
+    startFocusMode()
+    return
+  } else if (name === 'vecer') {
+    setTimeOfDay(5, false, false)
+    S.openT = 0
+    setSw('bWin', false)
+    S.ceilT = 0
+    S.lampT = 1
+    setSw('bCeil', false)
+    setSw('bLamp', true)
+    setRadiator(true, true)
+    if (!musicOn) toggleMusic()
+  }
+  savePrefs()
+  sfxClick()
+  syncHint()
+}
+
+/* —— Build / update / wire —— */
+function buildExtras() {
+  notifG = new THREE.Group()
+  scene.add(notifG)
+  buildCondensation()
+  buildPolaroid()
+  buildDeskReflection()
+  buildHands()
+  setupNightPost()
+
+  // music overlay on AOC
+  musicCoverTex = ctex(512, 512, () => {})
+  drawMusicCover(false)
+  musicPlane = new THREE.Mesh(
+    new THREE.PlaneGeometry(0.2, 0.2),
+    new THREE.MeshBasicMaterial({ map: musicCoverTex, toneMapped: false, transparent: true })
+  )
+  if (bigScreen) {
+    musicPlane.position.set(0.2, 0.43 + 0.08, 0.011)
+    bigScreen.add(musicPlane)
+  }
+
+  // screen pointers
+  aocPtr = new THREE.Mesh(
+    new THREE.SphereGeometry(0.006, 8, 8),
+    new THREE.MeshBasicMaterial({ color: 0xff6688 })
+  )
+  if (bigScreen) {
+    aocPtr.position.set(0, 0.43, 0.012)
+    bigScreen.add(aocPtr)
+  }
+  macPtr = new THREE.Mesh(
+    new THREE.SphereGeometry(0.004, 8, 8),
+    new THREE.MeshBasicMaterial({ color: 0x88ffaa })
+  )
+  if (laptopLid) laptopLid.add(macPtr)
+
+  ensureMacTerm()
+  syncMacTermStorage()
+
+  // UI hooks
+  if ($('bFocus')) $('bFocus').onclick = () => (focusOn ? stopFocusMode(false) : startFocusMode())
+  if ($('bMusic')) $('bMusic').onclick = () => toggleMusic()
+  if ($('bPresetRano')) $('bPresetRano').onclick = () => applyScenePreset('rano')
+  if ($('bPresetDeep')) $('bPresetDeep').onclick = () => applyScenePreset('deep')
+  if ($('bPresetVecer')) $('bPresetVecer').onclick = () => applyScenePreset('vecer')
+}
+
+function updateExtras(dt, t) {
+  updateFocus(dt)
+  updateMusic(dt, t)
+  updateNotifs(dt)
+  updateWeatherCoupling(dt)
+  updateCoffee(dt)
+  updateScreenPointers()
+  updateNightMode()
+  updateHands()
+}
+
+function extrasHandleKey(e) {
+  if (typingUi() && !$('macDlg')?.classList.contains('open')) {
+    /* allow mac live */
+  }
+  // Mac live terminal — spotrebuj klávesy skôr než sit/E
+  if (zoom === 'mac' && macOpen && PWR.mac && !$('macDlg')?.classList.contains('open')) {
+    if (macTypeKey(e)) return true
+    // špeciálne klávesy (Esc rieši iný handler) — blokuj skratky pri písaní
+    if (e.key.length === 1 || e.key === 'Backspace' || e.key === 'Enter') return true
+  }
+  if (typingUi()) return false
+  if (e.key === 'f' || e.key === 'F') {
+    if (focusOn) stopFocusMode(false)
+    else startFocusMode()
+    return true
+  }
+  if (e.key === 'j' || e.key === 'J') {
+    toggleMusic()
+    return true
+  }
+  if (zoom === 'book' || openBookG?.visible) {
+    if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+      flipOpenBook(e.key === 'ArrowRight' ? 1 : -1)
+      return true
+    }
+  }
+  return false
+}
+
+function extrasPointerDown(e) {
+  const n = pickNotif(e)
+  if (n) {
+    if (n.parent) n.parent.remove(n)
+    zoom = 'dell'
+    returning = 0
+    if (!PWR.dell) togglePwr('dell')
+    syncHint()
+    sfxClick()
+    return true
+  }
+  if (polaroidG && pick(e, polaroidG)) {
+    openPolaroid()
+    return true
+  }
+  if (openBookG?.visible && pick(e, openBookG)) {
+    flipOpenBook(1)
+    return true
+  }
+  if (deskBook && pick(e, deskBook) && deskBook.userData.onDesk) {
+    showOpenBookFromDesk(deskBook)
+    zoom = 'book'
+    ZOOMS.book = [V(BOOK_DESK_POS.x, DESK_TOP + 0.42, BOOK_DESK_POS.z + 0.28), BOOK_DESK_POS.clone().setY(DESK_TOP)]
+    returning = 0
+    syncHint()
+    return true
+  }
+  if (coffeeMugG && pick(e, coffeeMugG)) {
+    sipCoffee('cup')
+    return true
+  }
+  if (teaMugG && pick(e, teaMugG)) {
+    sipCoffee('tea')
+    return true
+  }
+  if (musicPlane && pick(e, musicPlane)) {
+    toggleMusic()
+    return true
+  }
+  if (roomSpeakerG && pick(e, roomSpeakerG)) {
+    toggleMusic()
+    return true
+  }
+  return false
+}
+
+function extrasAfterBookToDesk(book) {
+  showOpenBookFromDesk(book)
+}
+
+// patch book anim completion
+const _updateBookAnimOrig = updateBookAnim
+updateBookAnim = function (dt) {
+  const was = bookAnim
+  _updateBookAnimOrig(dt)
+  if (was && !bookAnim && was.mode === 'toDesk') {
+    extrasAfterBookToDesk(was.book)
+  }
+  if (was && !bookAnim && was.mode === 'toShelf') {
+    hideOpenBook()
+  }
+}
+
+// app.js build+loop už beží — extras sa napoja teraz
+try {
+  buildExtras()
+  if (deskBook?.userData?.onDesk) showOpenBookFromDesk(deskBook)
+} catch (err) {
+  console.error('extras build', err)
+  const h = $('hint')
+  if (h) h.textContent = `Extras: ${err.message}`
+}

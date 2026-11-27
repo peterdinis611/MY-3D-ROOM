@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
- * Rozdelí src/app.js na src/chunks/*.js (export default string).
- * Runtime Vite používa priamo src/app.js (?raw) – chunky sú na prehľadnosť.
+ * Rozdelí src/app.ts na src/chunks/*.js (export default string).
+ * Runtime Vite používa src/app.ts ako ES modul – chunky sú len na prehľadnosť.
  * Použitie: npm run split
  */
 import fs from 'node:fs'
@@ -9,7 +9,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
-const appPath = path.join(root, 'src/app.js')
+const appPath = path.join(root, 'src/app.ts')
 const chunksDir = path.join(root, 'src/chunks')
 
 const app = fs.readFileSync(appPath, 'utf8')
